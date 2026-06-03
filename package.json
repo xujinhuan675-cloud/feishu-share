@@ -1,0 +1,24 @@
+{
+  "name": "feishu-share",
+  "version": "0.1.0",
+  "description": "Obsidian plugin for Feishu and Obsidian document sync.",
+  "main": "main.js",
+  "scripts": {
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "feishu",
+    "sync"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.3"
+  }
+}

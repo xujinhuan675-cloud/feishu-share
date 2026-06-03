@@ -1,0 +1,10 @@
+{
+  "id": "feishu-share",
+  "name": "Feishu Share",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Share and sync Obsidian notes with Feishu docs and bitable.",
+  "author": "",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
