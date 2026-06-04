@@ -29,6 +29,15 @@ export class DocxBlocksToMarkdown {
 		};
 
 		const extractTextFromRichText = (rich: any): string => {
+			const textColorMap: Record<number, string> = {
+				1: 'gray',
+				2: 'brown',
+				3: 'orange',
+				4: 'yellow',
+				5: 'green',
+				6: 'blue',
+				7: 'purple'
+			};
 			const elements: any[] = rich && Array.isArray(rich.elements) ? rich.elements : [];
 			if (!Array.isArray(elements) || elements.length === 0) {
 				return '';
@@ -64,6 +73,11 @@ export class DocxBlocksToMarkdown {
 						if (style.underline) {
 							prefix.push('<u>');
 							suffix.unshift('</u>');
+						}
+						const textColor = Number(style.text_color || style.textColor || 0);
+						if (textColorMap[textColor]) {
+							prefix.push(`<span style="color:${textColorMap[textColor]}">`);
+							suffix.unshift('</span>');
 						}
 						if (style.background_color || style.backgroundColor) {
 							prefix.push('==');

@@ -1,5 +1,5 @@
 import { Plugin, Notice, TFile, Menu, Editor, MarkdownView, Modal, normalizePath } from 'obsidian';
-import { FeishuSettings, ShareResult, SyncDirection } from './src/types';
+import { FeishuSettings, ShareResult, SyncDirection, SyncTarget, ScheduledSyncScope, ScheduledSyncReport } from './src/types';
 import { DEFAULT_SETTINGS, SUCCESS_NOTICE_TEMPLATE } from './src/constants';
 import { FeishuApiService } from './src/feishu-api';
 import { FeishuSettingTab } from './src/settings';
@@ -8,12 +8,41 @@ import { Debug } from './src/debug';
 import { DocxBlocksToMarkdown } from './src/docx-blocks-to-markdown';
 import { SyncStateService } from './src/sync-state';
 import { planSmartSyncBoth } from './src/smart-sync-plan';
+import { bitableFieldToFrontMatterValue, bitableFieldToPlainText, normalizeBitableWriteValue } from './src/bitable-fields';
+
+type ShareFileOptions = {
+	forceUpdateUrl?: string;
+	syncTargetOverride?: SyncTarget;
+	silent?: boolean;
+};
+
+type SyncExecutionOptions = {
+	interactive?: boolean;
+	silent?: boolean;
+	source?: 'manual' | 'scheduled';
+};
+
+type SyncErrorExtra = {
+	docToken?: string;
+	url?: string;
+	bitableRecordId?: string;
+	remoteHash?: string;
+	remoteRevision?: string;
+	remoteUpdatedAt?: number;
+	docRemoteRevision?: string;
+	docRemoteUpdatedAt?: number;
+	bitableRemoteHash?: string;
+	bitableRemoteUpdatedAt?: number;
+};
 
 export default class FeishuPlugin extends Plugin {
 	settings: FeishuSettings;
 	feishuApi: FeishuApiService;
 	markdownProcessor: MarkdownProcessor;
 	syncState: SyncStateService;
+	private scheduledSyncIntervalId: number | null = null;
+	private scheduledSyncStartupTimeoutId: number | null = null;
+	private scheduledSyncInProgress: boolean = false;
 
 	async onload(): Promise<void> {
 		// 加载设置
@@ -37,10 +66,11 @@ export default class FeishuPlugin extends Plugin {
 		// 注册命令和菜单
 		this.registerCommands();
 		this.registerMenus();
+		this.configureScheduledSync();
 	}
 
 	onunload(): void {
-		// 清理资源
+		this.clearScheduledSyncTimers();
 	}
 
 	private registerFileMappingEvents(): void {
@@ -234,6 +264,14 @@ export default class FeishuPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: 'run-scheduled-smart-sync-now',
+			name: '立即执行定时智能同步范围',
+			callback: async () => {
+				await this.runScheduledSmartSync('manual', true);
+			}
+		});
+
+		this.addCommand({
 			id: 'overwrite-current-note-to-feishu',
 			name: '覆盖到已有飞书文档',
 			callback: async () => {
@@ -300,8 +338,43 @@ export default class FeishuPlugin extends Plugin {
 	}
 
 	private getBatchSyncFiles(): TFile[] {
-		const scope = this.settings.batchSyncScope || 'current_file';
+		return this.getFilesForScope(
+			this.settings.batchSyncScope || 'current_file',
+			this.settings.batchSyncCustomFolder || ''
+		);
+	}
+
+	private getScheduledSyncFiles(): TFile[] {
+		return this.getFilesForScope(
+			this.settings.scheduledSyncScope || 'tracked_files',
+			this.settings.scheduledSyncCustomFolder || ''
+		);
+	}
+
+	private getTrackedSyncFiles(): TFile[] {
+		const states = Array.isArray(this.settings.syncStates) ? this.settings.syncStates : [];
+		const seen = new Set<string>();
+		const files: TFile[] = [];
+		for (const state of states) {
+			const path = String(state?.filePath || '').trim();
+			if (!path || seen.has(path)) {
+				continue;
+			}
+			const file = this.getMarkdownFileByPath(path);
+			if (!file) {
+				continue;
+			}
+			seen.add(path);
+			files.push(file);
+		}
+		return files;
+	}
+
+	private getFilesForScope(scope: ScheduledSyncScope, customFolder: string): TFile[] {
 		const all = this.app.vault.getMarkdownFiles();
+		if (scope === 'tracked_files') {
+			return this.getTrackedSyncFiles();
+		}
 		if (scope === 'vault_all') {
 			return all;
 		}
@@ -317,13 +390,210 @@ export default class FeishuPlugin extends Plugin {
 			return all.filter((f: TFile) => f.parent?.path === folder);
 		}
 		if (scope === 'custom_folder') {
-			const folder = (this.settings.batchSyncCustomFolder || '').trim();
+			const folder = String(customFolder || '').trim();
 			if (!folder) {
 				return [];
 			}
 			return all.filter((f: TFile) => f.path.startsWith(folder.endsWith('/') ? folder : folder + '/'));
 		}
 		return [activeFile];
+	}
+
+	private normalizeScheduledSyncIntervalMinutes(value: number | string | undefined): number {
+		const parsed = typeof value === 'number' ? value : Number(value);
+		if (!Number.isFinite(parsed)) {
+			return 30;
+		}
+		return Math.max(5, Math.min(24 * 60, Math.round(parsed)));
+	}
+
+	private getScheduledSyncReport(): ScheduledSyncReport {
+		const existing = this.settings.scheduledSyncReport || {};
+		return {
+			status: 'idle',
+			failureStreak: 0,
+			...existing
+		};
+	}
+
+	private async persistScheduledSyncReport(update: Partial<ScheduledSyncReport>): Promise<void> {
+		this.settings.scheduledSyncReport = {
+			...this.getScheduledSyncReport(),
+			...update
+		};
+		await this.saveData(this.settings);
+	}
+
+	private getScheduledSyncPauseMessage(report?: ScheduledSyncReport): string {
+		const activeReport = report || this.getScheduledSyncReport();
+		if (!activeReport.pauseUntil || activeReport.pauseUntil <= Date.now()) {
+			return '';
+		}
+		const remainingMinutes = Math.max(1, Math.ceil((activeReport.pauseUntil - Date.now()) / 60000));
+		return `定时同步已暂停，约 ${remainingMinutes} 分钟后自动恢复`;
+	}
+
+	private clearScheduledSyncTimers(): void {
+		if (this.scheduledSyncIntervalId !== null) {
+			window.clearInterval(this.scheduledSyncIntervalId);
+			this.scheduledSyncIntervalId = null;
+		}
+		if (this.scheduledSyncStartupTimeoutId !== null) {
+			window.clearTimeout(this.scheduledSyncStartupTimeoutId);
+			this.scheduledSyncStartupTimeoutId = null;
+		}
+	}
+
+	private configureScheduledSync(skipStartup: boolean = false): void {
+		this.clearScheduledSyncTimers();
+		if (!this.settings.enableScheduledSync) {
+			return;
+		}
+		const intervalMinutes = this.normalizeScheduledSyncIntervalMinutes(this.settings.scheduledSyncIntervalMinutes);
+		const intervalMs = intervalMinutes * 60 * 1000;
+		this.scheduledSyncIntervalId = window.setInterval(() => {
+			void this.runScheduledSmartSync('interval');
+		}, intervalMs);
+
+		if (!skipStartup && this.settings.scheduledSyncRunOnStartup) {
+			this.scheduledSyncStartupTimeoutId = window.setTimeout(() => {
+				void this.runScheduledSmartSync('startup');
+			}, 15000);
+		}
+	}
+
+	async runScheduledSmartSync(trigger: 'startup' | 'interval' | 'manual' = 'manual', showSummaryNotice: boolean = false): Promise<void> {
+		const previousReport = this.getScheduledSyncReport();
+		if (this.scheduledSyncInProgress) {
+			if (showSummaryNotice) {
+				new Notice('⏳ 定时同步正在执行中，请稍后再试');
+			}
+			return;
+		}
+		if (trigger !== 'manual' && previousReport.pauseUntil && previousReport.pauseUntil > Date.now()) {
+			const message = this.getScheduledSyncPauseMessage(previousReport);
+			this.log(`Scheduled sync paused: ${message}`, 'warn');
+			await this.persistScheduledSyncReport({
+				status: 'paused',
+				lastTrigger: trigger,
+				message
+			});
+			if (showSummaryNotice) {
+				new Notice(message || '定时同步已暂停');
+			}
+			return;
+		}
+		if (!this.settings.accessToken || !this.settings.userInfo) {
+			this.log('Scheduled sync skipped: authorization missing', 'warn');
+			await this.persistScheduledSyncReport({
+				lastRunAt: Date.now(),
+				lastTrigger: trigger,
+				status: 'skipped',
+				totalFiles: 0,
+				successCount: 0,
+				failedCount: 0,
+				skippedCount: 1,
+				message: '缺少飞书授权，已跳过本次定时同步',
+				lastError: 'authorization-missing'
+			});
+			if (showSummaryNotice) {
+				new Notice('❌ 请先在设置中完成飞书授权');
+			}
+			return;
+		}
+
+		const files = this.getScheduledSyncFiles();
+		if (!files.length) {
+			await this.persistScheduledSyncReport({
+				lastRunAt: Date.now(),
+				lastTrigger: trigger,
+				status: 'skipped',
+				totalFiles: 0,
+				successCount: 0,
+				failedCount: 0,
+				skippedCount: 1,
+				message: '当前定时同步范围内没有可同步文件',
+				lastError: undefined
+			});
+			if (showSummaryNotice) {
+				new Notice('当前定时同步范围内没有可同步文件');
+			}
+			return;
+		}
+
+		const startedAt = Date.now();
+		this.scheduledSyncInProgress = true;
+		let successCount = 0;
+		let failedCount = 0;
+		let lastError = '';
+		await this.persistScheduledSyncReport({
+			lastRunAt: startedAt,
+			lastTrigger: trigger,
+			status: 'running',
+			totalFiles: files.length,
+			successCount: 0,
+			failedCount: 0,
+			skippedCount: 0,
+			message: `正在执行 ${files.length} 个文件的定时同步`,
+			lastError: undefined,
+			pauseUntil: trigger === 'manual' ? undefined : previousReport.pauseUntil
+		});
+		try {
+			for (const file of files) {
+				const ok = await this.smartSyncFile(file, {
+					interactive: false,
+					silent: true,
+					source: 'scheduled'
+				});
+				if (ok) {
+					successCount++;
+				} else {
+					failedCount++;
+				}
+			}
+		} catch (error) {
+			failedCount++;
+			lastError = (error as Error)?.message || String(error);
+			this.log(`Scheduled sync aborted: ${lastError}`, 'warn');
+		} finally {
+			this.scheduledSyncInProgress = false;
+		}
+
+		const durationMs = Date.now() - startedAt;
+		const nextFailureStreak = failedCount > 0 && successCount === 0
+			? (previousReport.failureStreak || 0) + 1
+			: 0;
+		const pauseUntil = trigger !== 'manual' && nextFailureStreak >= 3
+			? Date.now() + 60 * 60 * 1000
+			: undefined;
+		const status: ScheduledSyncReport['status'] = failedCount === 0
+			? 'success'
+			: (successCount > 0 ? 'partial' : 'failed');
+		const message = status === 'success'
+			? `定时同步完成：成功 ${successCount}/${files.length}`
+			: status === 'partial'
+				? `定时同步部分完成：成功 ${successCount}，失败 ${failedCount}`
+				: (pauseUntil
+					? `定时同步连续失败 ${nextFailureStreak} 次，已暂停 60 分钟`
+					: `定时同步失败：${failedCount}/${files.length}`);
+		await this.persistScheduledSyncReport({
+			lastRunAt: startedAt,
+			lastDurationMs: durationMs,
+			lastTrigger: trigger,
+			status: pauseUntil ? 'paused' : status,
+			totalFiles: files.length,
+			successCount,
+			failedCount,
+			skippedCount: 0,
+			message,
+			lastError: lastError || (failedCount > 0 ? 'one-or-more-files-failed' : undefined),
+			failureStreak: nextFailureStreak,
+			pauseUntil
+		});
+		this.log(`Scheduled sync (${trigger}) finished: success ${successCount}/${files.length}, failed ${failedCount}`);
+		if (showSummaryNotice) {
+			new Notice(message);
+		}
 	}
 
 	async smartSyncCurrentNote(): Promise<void> {
@@ -335,22 +605,22 @@ export default class FeishuPlugin extends Plugin {
 		await this.smartSyncFile(activeFile);
 	}
 
-	async smartSyncFileByPath(filePath: string): Promise<void> {
+	async smartSyncFileByPath(filePath: string): Promise<boolean> {
 		const file = this.getMarkdownFileByPath(filePath);
 		if (!file) {
 			new Notice('❌ 未找到对应的 Markdown 文件');
-			return;
+			return false;
 		}
-		await this.smartSyncFile(file);
+		return await this.smartSyncFile(file);
 	}
 
-	async pullFromFeishuByPath(filePath: string): Promise<void> {
+	async pullFromFeishuByPath(filePath: string): Promise<boolean> {
 		const file = this.getMarkdownFileByPath(filePath);
 		if (!file) {
 			new Notice('❌ 未找到对应的 Markdown 文件');
-			return;
+			return false;
 		}
-		await this.updateFromFeishu(file);
+		return await this.updateFromFeishu(file);
 	}
 
 	async pushToFeishuByPath(filePath: string): Promise<void> {
@@ -362,19 +632,19 @@ export default class FeishuPlugin extends Plugin {
 		const rawContent = await this.app.vault.read(file);
 		const feishuUrl = this.getFeishuUrlForFile(file, rawContent);
 		if (feishuUrl) {
-			await this.shareFile(file, { forceUpdateUrl: feishuUrl });
+			await this.shareFile(file, { forceUpdateUrl: feishuUrl, syncTargetOverride: 'docx' });
 		} else {
-			await this.shareFile(file);
+			await this.shareFile(file, { syncTargetOverride: 'docx' });
 		}
 	}
 
-	async pullFromBitableByPath(filePath: string): Promise<void> {
+	async pullFromBitableByPath(filePath: string): Promise<boolean> {
 		const file = this.getMarkdownFileByPath(filePath);
 		if (!file) {
 			new Notice('❌ 未找到对应的 Markdown 文件');
-			return;
+			return false;
 		}
-		await this.pullFileFromBitable(file);
+		return await this.pullFileFromBitable(file);
 	}
 
 	private getMarkdownFileByPath(filePath: string): TFile | null {
@@ -417,7 +687,7 @@ export default class FeishuPlugin extends Plugin {
 		return JSON.stringify(value);
 	}
 
-	private async recordSyncError(file: TFile | null | undefined, direction: SyncDirection, error: unknown, context: string, extra?: { docToken?: string; url?: string; bitableRecordId?: string; remoteHash?: string; remoteRevision?: string; remoteUpdatedAt?: number }): Promise<void> {
+	private async recordSyncError(file: TFile | null | undefined, direction: SyncDirection, error: unknown, context: string, extra?: SyncErrorExtra): Promise<void> {
 		if (!file || file.extension !== 'md' || !this.syncState) {
 			return;
 		}
@@ -438,7 +708,11 @@ export default class FeishuPlugin extends Plugin {
 				error: `${context}: ${this.getErrorMessage(error)}`,
 				remoteHash: extra?.remoteHash,
 				remoteRevision: extra?.remoteRevision,
-				remoteUpdatedAt: extra?.remoteUpdatedAt
+				remoteUpdatedAt: extra?.remoteUpdatedAt,
+				docRemoteRevision: extra?.docRemoteRevision,
+				docRemoteUpdatedAt: extra?.docRemoteUpdatedAt,
+				bitableRemoteHash: extra?.bitableRemoteHash,
+				bitableRemoteUpdatedAt: extra?.bitableRemoteUpdatedAt
 			});
 			await this.saveSettings();
 		} catch (stateError) {
@@ -450,90 +724,134 @@ export default class FeishuPlugin extends Plugin {
 		return (error as Error)?.message || String(error);
 	}
 
-	private async smartSyncFile(file: TFile): Promise<void> {
-		if (!file || file.extension !== 'md') {
-			new Notice('❌ 只支持 Markdown 文件');
-			return;
-		}
-		if (!this.settings.accessToken || !this.settings.userInfo) {
-			new Notice('❌ 请先在设置中完成飞书授权');
-			return;
-		}
-
-		const rawContent = await this.app.vault.read(file);
-		if (this.settings.syncTarget === 'bitable') {
-			await this.smartSyncBitableFile(file, rawContent);
-			return;
-		}
-		if (this.settings.syncTarget === 'both') {
-			await this.smartSyncBothFile(file, rawContent);
-			return;
-		}
-		const feishuUrl = this.getFeishuUrlForFile(file, rawContent);
-		if (!feishuUrl) {
-			new Notice('未找到飞书映射，正在创建新文档');
-			await this.shareFile(file);
-			return;
-		}
-
-		const docToken = this.feishuApi.extractDocumentIdFromUrl(feishuUrl);
-		const remoteMeta = docToken ? await this.feishuApi.getDocumentMeta(docToken) : null;
-		const evaluation = this.syncState.evaluateSync(file.path, rawContent, {
-			kind: 'doc',
-			revision: remoteMeta?.revision,
-			updatedAt: remoteMeta?.updatedAt
-		});
-
-		if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
-			const choice = await this.chooseSmartSyncConflictAction(file.basename);
-			if (choice === 'cancel') {
-				this.syncState.upsert({
-					filePath: file.path,
-					title: file.basename,
-					content: rawContent,
-					docToken: this.extractDocTokenFromUrl(feishuUrl) || undefined,
-					url: feishuUrl,
-					direction: 'obsidian-to-feishu',
-					status: 'conflict',
-					error: '智能同步检测到双向变更，用户取消',
-					remoteRevision: remoteMeta?.revision,
-					remoteUpdatedAt: remoteMeta?.updatedAt
-				});
-				await this.saveSettings();
-				new Notice('已取消：本地和飞书都有改动');
-				return;
-			}
-			if (choice === 'pull') {
-				await this.updateFromFeishu(file);
-				return;
-			}
-			await this.shareFile(file, { forceUpdateUrl: feishuUrl });
-			return;
-		}
-
-		if (evaluation.hasRemoteChanges) {
-			await this.updateFromFeishu(file);
-			return;
-		}
-
-		if (evaluation.hasLocalChanges || !evaluation.hasBaseline) {
-			await this.shareFile(file, { forceUpdateUrl: feishuUrl });
-			return;
-		}
-
-		new Notice('✅ 本地和飞书已是最新');
+	private getErrorDirectionForTarget(target?: SyncTarget): SyncDirection {
+		return target === 'bitable' ? 'bitable' : 'obsidian-to-feishu';
 	}
 
-	private async smartSyncBitableFile(file: TFile, rawContent: string): Promise<void> {
+	private async smartSyncFile(file: TFile, options?: SyncExecutionOptions): Promise<boolean> {
+		const interactive = options?.interactive !== false;
+		const silent = options?.silent === true;
+		const syncLabel = options?.source === 'scheduled' ? '定时同步' : '智能同步';
+		if (!file || file.extension !== 'md') {
+			if (!silent) {
+				new Notice('❌ 只支持 Markdown 文件');
+			}
+			return false;
+		}
+		if (!this.settings.accessToken || !this.settings.userInfo) {
+			if (!silent) {
+				new Notice('❌ 请先在设置中完成飞书授权');
+			}
+			return false;
+		}
+
+		try {
+			const rawContent = await this.app.vault.read(file);
+			if (this.settings.syncTarget === 'bitable') {
+				return await this.smartSyncBitableFile(file, rawContent, options);
+			}
+			if (this.settings.syncTarget === 'both') {
+				return await this.smartSyncBothFile(file, rawContent, options);
+			}
+			const feishuUrl = this.getFeishuUrlForFile(file, rawContent);
+			if (!feishuUrl) {
+				if (!silent) {
+					new Notice('未找到飞书映射，正在创建新文档');
+				}
+				return await this.shareFile(file, { silent });
+			}
+
+			const docToken = this.feishuApi.extractDocumentIdFromUrl(feishuUrl);
+			const remoteMeta = docToken ? await this.feishuApi.getDocumentMeta(docToken) : null;
+			const evaluation = this.syncState.evaluateSync(file.path, rawContent, {
+				kind: 'doc',
+				revision: remoteMeta?.revision,
+				updatedAt: remoteMeta?.updatedAt
+			});
+
+			if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+				if (!interactive) {
+					this.syncState.upsert({
+						filePath: file.path,
+						title: file.basename,
+						content: rawContent,
+						docToken: this.extractDocTokenFromUrl(feishuUrl) || undefined,
+						url: feishuUrl,
+						direction: 'obsidian-to-feishu',
+						status: 'conflict',
+						error: `${syncLabel}检测到本地和飞书都有改动，已跳过`,
+						remoteRevision: remoteMeta?.revision,
+						remoteUpdatedAt: remoteMeta?.updatedAt
+					});
+					await this.saveSettings();
+					this.log(`${syncLabel} skipped conflict for ${file.path}`, 'warn');
+					return false;
+				}
+				const choice = await this.chooseSmartSyncConflictAction(file.basename);
+				if (choice === 'cancel') {
+					this.syncState.upsert({
+						filePath: file.path,
+						title: file.basename,
+						content: rawContent,
+						docToken: this.extractDocTokenFromUrl(feishuUrl) || undefined,
+						url: feishuUrl,
+						direction: 'obsidian-to-feishu',
+						status: 'conflict',
+						error: '智能同步检测到双向变更，用户取消',
+						remoteRevision: remoteMeta?.revision,
+						remoteUpdatedAt: remoteMeta?.updatedAt
+					});
+					await this.saveSettings();
+					if (!silent) {
+						new Notice('已取消：本地和飞书都有改动');
+					}
+					return false;
+				}
+				if (choice === 'pull') {
+					return await this.updateFromFeishu(file, options);
+				}
+				return await this.shareFile(file, { forceUpdateUrl: feishuUrl, silent });
+			}
+
+			if (evaluation.hasRemoteChanges) {
+				return await this.updateFromFeishu(file, options);
+			}
+
+			if (evaluation.hasLocalChanges || !evaluation.hasBaseline) {
+				return await this.shareFile(file, { forceUpdateUrl: feishuUrl, silent });
+			}
+
+			if (!silent) {
+				new Notice('✅ 本地和飞书已是最新');
+			}
+			return true;
+		} catch (error) {
+			await this.recordSyncError(file, this.getErrorDirectionForTarget(this.settings.syncTarget), error, syncLabel);
+			if (!silent) {
+				this.handleError(error as Error, syncLabel);
+			} else {
+				this.log(`${syncLabel} failed for ${file.path}: ${this.getErrorMessage(error)}`, 'warn');
+			}
+			return false;
+		}
+	}
+
+	private async smartSyncBitableFile(file: TFile, rawContent: string, options?: SyncExecutionOptions): Promise<boolean> {
+		const interactive = options?.interactive !== false;
+		const silent = options?.silent === true;
+		const syncLabel = options?.source === 'scheduled' ? '定时同步' : '智能同步';
 		if (!this.settings.bitableAppToken || !this.settings.bitableTableId) {
-			new Notice('❌ 请先在设置中填写 Bitable App Token 和 Bitable Table ID');
-			return;
+			if (!silent) {
+				new Notice('❌ 请先在设置中填写 Bitable App Token 和 Bitable Table ID');
+			}
+			return false;
 		}
 		const recordId = this.getBitableRecordIdForFile(file, rawContent);
 		if (!recordId) {
-			new Notice('未找到 Bitable 映射，正在创建/更新多维表格记录');
-			await this.shareFile(file);
-			return;
+			if (!silent) {
+				new Notice('未找到 Bitable 映射，正在创建/更新多维表格记录');
+			}
+			return await this.shareFile(file, { silent });
 		}
 		const record = await this.feishuApi.getBitableRecord(this.settings.bitableAppToken, this.settings.bitableTableId, recordId);
 		if (!record.success) {
@@ -546,6 +864,22 @@ export default class FeishuPlugin extends Plugin {
 			updatedAt: record.updatedAt
 		});
 		if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+			if (!interactive) {
+				this.syncState.upsert({
+					filePath: file.path,
+					title: file.basename,
+					content: rawContent,
+					bitableRecordId: record.recordId || recordId,
+					direction: 'bitable',
+					status: 'conflict',
+					error: `${syncLabel}检测到本地和多维表格都有改动，已跳过`,
+					remoteHash,
+					remoteUpdatedAt: record.updatedAt
+				});
+				await this.saveSettings();
+				this.log(`${syncLabel} skipped Bitable conflict for ${file.path}`, 'warn');
+				return false;
+			}
 			const choice = await this.chooseSmartSyncConflictAction(file.basename);
 			if (choice === 'cancel') {
 				this.syncState.upsert({
@@ -560,34 +894,42 @@ export default class FeishuPlugin extends Plugin {
 					remoteUpdatedAt: record.updatedAt
 				});
 				await this.saveSettings();
-				new Notice('已取消：本地和多维表格都有改动');
-				return;
+				if (!silent) {
+					new Notice('已取消：本地和多维表格都有改动');
+				}
+				return false;
 			}
 			if (choice === 'pull') {
-				await this.pullFileFromBitable(file);
-				return;
+				return await this.pullFileFromBitable(file, options);
 			}
-			await this.shareFile(file);
-			return;
+			return await this.shareFile(file, { silent });
 		}
 		if (evaluation.hasRemoteChanges) {
-			await this.pullFileFromBitable(file);
-			return;
+			return await this.pullFileFromBitable(file, options);
 		}
 		if (evaluation.hasLocalChanges || !evaluation.hasBaseline) {
-			await this.shareFile(file);
-			return;
+			return await this.shareFile(file, { silent });
 		}
-		new Notice('✅ 本地和多维表格已是最新');
+		if (!silent) {
+			new Notice('✅ 本地和多维表格已是最新');
+		}
+		return true;
 	}
 
-	private async syncBothTargetsFromLocal(file: TFile): Promise<void> {
+	private async syncBothTargetsFromLocal(file: TFile, options?: SyncExecutionOptions): Promise<boolean> {
 		const latestContent = await this.app.vault.read(file);
 		const feishuUrl = this.getFeishuUrlForFile(file, latestContent);
-		await this.shareFile(file, feishuUrl ? { forceUpdateUrl: feishuUrl } : undefined);
+		return await this.shareFile(file, {
+			...(feishuUrl ? { forceUpdateUrl: feishuUrl } : {}),
+			syncTargetOverride: 'both',
+			silent: options?.silent
+		});
 	}
 
-	private async smartSyncBothFile(file: TFile, rawContent: string): Promise<void> {
+	private async smartSyncBothFile(file: TFile, rawContent: string, options?: SyncExecutionOptions): Promise<boolean> {
+		const interactive = options?.interactive !== false;
+		const silent = options?.silent === true;
+		const syncLabel = options?.source === 'scheduled' ? '定时同步' : '智能同步';
 		const feishuUrl = this.getFeishuUrlForFile(file, rawContent);
 		const docToken = feishuUrl ? this.feishuApi.extractDocumentIdFromUrl(feishuUrl) : '';
 		const remoteMeta = docToken ? await this.feishuApi.getDocumentMeta(docToken) : null;
@@ -600,8 +942,13 @@ export default class FeishuPlugin extends Plugin {
 		let bitableRemoteHash: string | undefined;
 		let bitableUpdatedAt: number | undefined;
 		const bitableRecordId = this.getBitableRecordIdForFile(file, rawContent);
-		if (bitableRecordId && this.settings.bitableAppToken && this.settings.bitableTableId) {
-			const record = await this.feishuApi.getBitableRecord(this.settings.bitableAppToken, this.settings.bitableTableId, bitableRecordId);
+		if (bitableRecordId && (!this.settings.bitableAppToken || !this.settings.bitableTableId)) {
+			throw new Error('两者都同步需要填写 Bitable App Token 和 Bitable Table ID，才能检查多维表格远端改动');
+		}
+		if (bitableRecordId) {
+			const appToken = this.settings.bitableAppToken as string;
+			const tableId = this.settings.bitableTableId as string;
+			const record = await this.feishuApi.getBitableRecord(appToken, tableId, bitableRecordId);
 			if (!record.success) {
 				throw new Error(record.error || '读取 Bitable 记录失败');
 			}
@@ -629,35 +976,54 @@ export default class FeishuPlugin extends Plugin {
 		);
 
 		if (plan.action === 'create-all') {
-			new Notice('未找到飞书文档或多维表格映射，正在创建完整同步');
-			await this.shareFile(file);
-			return;
+			if (!silent) {
+				new Notice('未找到飞书文档或多维表格映射，正在创建完整同步');
+			}
+			return await this.shareFile(file, { syncTargetOverride: 'both', silent });
 		}
 		if (plan.action === 'push-all') {
-			await this.shareFile(file, feishuUrl ? { forceUpdateUrl: feishuUrl } : undefined);
-			return;
+			return await this.shareFile(file, {
+				...(feishuUrl ? { forceUpdateUrl: feishuUrl } : {}),
+				syncTargetOverride: 'both',
+				silent
+			});
 		}
 		if (plan.action === 'pull-feishu') {
-			await this.updateFromFeishu(file);
-			await this.syncBothTargetsFromLocal(file);
-			return;
+			return (await this.updateFromFeishu(file, options)) && (await this.syncBothTargetsFromLocal(file, options));
 		}
 		if (plan.action === 'pull-bitable') {
-			await this.pullFileFromBitable(file);
-			await this.syncBothTargetsFromLocal(file);
-			return;
+			return (await this.pullFileFromBitable(file, options)) && (await this.syncBothTargetsFromLocal(file, options));
 		}
 		if (plan.action === 'choose-remote-source') {
+			if (!interactive) {
+				this.syncState.upsert({
+					filePath: file.path,
+					title: file.basename,
+					content: rawContent,
+					docToken: docToken || undefined,
+					url: feishuUrl || undefined,
+					bitableRecordId: bitableRecordId || undefined,
+					direction: 'obsidian-to-feishu',
+					status: 'conflict',
+					error: `${syncLabel}检测到飞书文档和多维表格都有远端改动，已跳过`,
+					remoteHash: bitableRemoteHash,
+					remoteRevision: remoteMeta?.revision,
+					remoteUpdatedAt: Math.max(remoteMeta?.updatedAt || 0, bitableUpdatedAt || 0) || undefined,
+					docRemoteRevision: remoteMeta?.revision,
+					docRemoteUpdatedAt: remoteMeta?.updatedAt,
+					bitableRemoteHash,
+					bitableRemoteUpdatedAt: bitableUpdatedAt
+				});
+				await this.saveSettings();
+				this.log(`${syncLabel} skipped dual-remote conflict for ${file.path}`, 'warn');
+				return false;
+			}
 			const choice = await this.chooseBothRemoteSourceAction(file.basename);
 			if (choice === 'feishu') {
-				await this.updateFromFeishu(file);
-				await this.syncBothTargetsFromLocal(file);
-				return;
+				return (await this.updateFromFeishu(file, options)) && (await this.syncBothTargetsFromLocal(file, options));
 			}
 			if (choice === 'bitable') {
-				await this.pullFileFromBitable(file);
-				await this.syncBothTargetsFromLocal(file);
-				return;
+				return (await this.pullFileFromBitable(file, options)) && (await this.syncBothTargetsFromLocal(file, options));
 			}
 			this.syncState.upsert({
 				filePath: file.path,
@@ -678,10 +1044,35 @@ export default class FeishuPlugin extends Plugin {
 				bitableRemoteUpdatedAt: bitableUpdatedAt
 			});
 			await this.saveSettings();
-			new Notice('已取消：飞书文档和多维表格都有远端改动');
-			return;
+			if (!silent) {
+				new Notice('已取消：飞书文档和多维表格都有远端改动');
+			}
+			return false;
 		}
 		if (plan.action === 'choose-local-vs-feishu' || plan.action === 'choose-local-vs-bitable') {
+			if (!interactive) {
+				this.syncState.upsert({
+					filePath: file.path,
+					title: file.basename,
+					content: rawContent,
+					docToken: docToken || undefined,
+					url: feishuUrl || undefined,
+					bitableRecordId: bitableRecordId || undefined,
+					direction: plan.action === 'choose-local-vs-bitable' ? 'bitable' : 'obsidian-to-feishu',
+					status: 'conflict',
+					error: `${syncLabel}检测到 ${plan.reason}，已跳过`,
+					remoteHash: bitableRemoteHash,
+					remoteRevision: remoteMeta?.revision,
+					remoteUpdatedAt: Math.max(remoteMeta?.updatedAt || 0, bitableUpdatedAt || 0) || undefined,
+					docRemoteRevision: remoteMeta?.revision,
+					docRemoteUpdatedAt: remoteMeta?.updatedAt,
+					bitableRemoteHash,
+					bitableRemoteUpdatedAt: bitableUpdatedAt
+				});
+				await this.saveSettings();
+				this.log(`${syncLabel} skipped local-vs-remote conflict for ${file.path}`, 'warn');
+				return false;
+			}
 			const choice = await this.chooseSmartSyncConflictAction(file.basename);
 			if (choice === 'cancel') {
 				this.syncState.upsert({
@@ -703,22 +1094,33 @@ export default class FeishuPlugin extends Plugin {
 					bitableRemoteUpdatedAt: bitableUpdatedAt
 				});
 				await this.saveSettings();
-				new Notice(`已取消：${plan.reason}`);
-				return;
+				if (!silent) {
+					new Notice(`已取消：${plan.reason}`);
+				}
+				return false;
 			}
 			if (choice === 'pull') {
 				if (plan.action === 'choose-local-vs-bitable') {
-					await this.pullFileFromBitable(file);
+					if (!await this.pullFileFromBitable(file, options)) {
+						return false;
+					}
 				} else {
-					await this.updateFromFeishu(file);
+					if (!await this.updateFromFeishu(file, options)) {
+						return false;
+					}
 				}
-				await this.syncBothTargetsFromLocal(file);
-				return;
+				return await this.syncBothTargetsFromLocal(file, options);
 			}
-			await this.shareFile(file, feishuUrl ? { forceUpdateUrl: feishuUrl } : undefined);
-			return;
+			return await this.shareFile(file, {
+				...(feishuUrl ? { forceUpdateUrl: feishuUrl } : {}),
+				syncTargetOverride: 'both',
+				silent
+			});
 		}
-		new Notice('✅ 本地、飞书文档和多维表格已是最新');
+		if (!silent) {
+			new Notice('✅ 本地、飞书文档和多维表格已是最新');
+		}
+		return true;
 	}
 
 	async syncCurrentNote(): Promise<void> {
@@ -737,13 +1139,28 @@ export default class FeishuPlugin extends Plugin {
 			return;
 		}
 		const statusNotice = this.settings.suppressShareNotices ? undefined : new Notice(`🔄 批量同步中(0/${files.length})...`, 0);
+		let successCount = 0;
+		let failedCount = 0;
 		try {
 			for (let i = 0; i < files.length; i++) {
 				statusNotice?.setMessage(`🔄 批量同步中(${i + 1}/${files.length})...`);
-				await this.shareFile(files[i]);
+				try {
+					const ok = await this.shareFile(files[i]);
+					if (ok) {
+						successCount++;
+					} else {
+						failedCount++;
+					}
+				} catch (error) {
+					failedCount++;
+					this.log(`Batch sync failed for ${files[i].path}: ${(error as Error)?.message || String(error)}`, 'warn');
+				}
 			}
 		} finally {
 			statusNotice?.hide();
+		}
+		if (!this.settings.suppressShareNotices) {
+			new Notice(`✅ 批量同步完成：成功 ${successCount}，失败 ${failedCount}`);
 		}
 	}
 
@@ -760,8 +1177,12 @@ export default class FeishuPlugin extends Plugin {
 			for (let i = 0; i < files.length; i++) {
 				statusNotice?.setMessage(`🔄 智能同步中(${i + 1}/${files.length})...`);
 				try {
-					await this.smartSyncFile(files[i]);
-					successCount++;
+					const ok = await this.smartSyncFile(files[i]);
+					if (ok) {
+						successCount++;
+					} else {
+						failedCount++;
+					}
 				} catch (error) {
 					failedCount++;
 					this.log(`Smart sync failed for ${files[i].path}: ${(error as Error)?.message || String(error)}`, 'warn');
@@ -867,18 +1288,24 @@ export default class FeishuPlugin extends Plugin {
 		);
 	}
 
-	private async updateFromFeishu(file: TFile): Promise<void> {
-		const statusNotice = this.settings.suppressShareNotices ? undefined : new Notice('⬇️ 正在从飞书更新...', 0);
+	private async updateFromFeishu(file: TFile, options?: SyncExecutionOptions): Promise<boolean> {
+		const interactive = options?.interactive !== false;
+		const silent = options?.silent === true;
+		const statusNotice = (silent || this.settings.suppressShareNotices) ? undefined : new Notice('⬇️ 正在从飞书更新...', 0);
 		try {
 			if (!file || file.extension !== 'md') {
 				statusNotice?.hide();
-				new Notice('❌ 只支持 Markdown 文件');
-				return;
+				if (!silent) {
+					new Notice('❌ 只支持 Markdown 文件');
+				}
+				return false;
 			}
 			if (!this.settings.accessToken || !this.settings.userInfo) {
 				statusNotice?.hide();
-				new Notice('❌ 请先在设置中完成飞书授权');
-				return;
+				if (!silent) {
+					new Notice('❌ 请先在设置中完成飞书授权');
+				}
+				return false;
 			}
 
 			const extractLinkFromFrontMatter = (raw: string): string => {
@@ -914,8 +1341,10 @@ export default class FeishuPlugin extends Plugin {
 			const tokenOk = await this.feishuApi.ensureValidTokenWithReauth(statusNotice);
 			if (!tokenOk) {
 				statusNotice?.hide();
-				new Notice('❌ 授权未完成，请重试');
-				return;
+				if (!silent) {
+					new Notice('❌ 授权未完成，请重试');
+				}
+				return false;
 			}
 
 			const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
@@ -928,9 +1357,13 @@ export default class FeishuPlugin extends Plugin {
 			let url = directUrl || fmLink;
 			if (!url) {
 				statusNotice?.hide();
+				if (silent || !interactive) {
+					this.log(`Skipping pull from Feishu for ${file.path}: missing mapped URL`, 'warn');
+					return false;
+				}
 				const pasted = await this.promptFeishuUrlForOverwrite();
 				if (!pasted) {
-					return;
+					return false;
 				}
 				url = pasted;
 				if (statusNotice) {
@@ -957,6 +1390,23 @@ export default class FeishuPlugin extends Plugin {
 
 			const localChange = this.syncState.getLocalChange(file.path, rawContent);
 			if (localChange.hasLocalChanges) {
+				if (!interactive) {
+					this.syncState.upsert({
+						filePath: file.path,
+						title: file.basename,
+						content: rawContent,
+						docToken: this.extractDocTokenFromUrl(url) || undefined,
+						url,
+						direction: 'feishu-to-obsidian',
+						status: 'conflict',
+						error: '定时同步检测到本地存在未同步改动，已跳过飞书覆盖',
+						remoteRevision: remoteMeta?.revision,
+						remoteUpdatedAt: remoteMeta?.updatedAt
+					});
+					await this.saveSettings();
+					this.log(`Scheduled sync skipped Feishu overwrite for ${file.path}`, 'warn');
+					return false;
+				}
 				statusNotice?.hide();
 				const shouldOverwrite = await this.confirmOverwriteLocalChanges(file.basename, localChange.lastHash || '', localChange.currentHash, '飞书');
 				if (!shouldOverwrite) {
@@ -973,15 +1423,17 @@ export default class FeishuPlugin extends Plugin {
 						remoteUpdatedAt: remoteMeta?.updatedAt
 					});
 					await this.saveSettings();
-					new Notice('已取消：本地内容有未同步改动');
-					return;
+					if (!silent) {
+						new Notice('已取消：本地内容有未同步改动');
+					}
+					return false;
 				}
 				if (statusNotice) {
 					statusNotice.setMessage('💾 正在写入本地文件...');
 				}
 			}
 
-			md = await this.localizeFeishuMediaBlocks(md, blocks, file.basename, statusNotice);
+			md = await this.localizeFeishuMediaBlocks(md, blocks, file.basename, statusNotice, silent);
 			statusNotice?.setMessage('💾 正在写入本地文件...');
 			const withShareMark = this.markdownProcessor.addShareMarkToFrontMatter(md, url, (file.stat as any)?.ctime, file.basename);
 			const backupPath = await this.backupBeforeRemoteOverwrite(file, rawContent, 'Feishu Docx');
@@ -1024,15 +1476,23 @@ export default class FeishuPlugin extends Plugin {
 				console.warn('[feishu-share] Failed to update uploadHistory after updateFromFeishu (ignored)', e);
 			}
 			statusNotice?.hide();
-			new Notice(backupPath ? `✅ 已从飞书更新并覆盖本地文件\n备份：${backupPath}` : '✅ 已从飞书更新并覆盖本地文件');
+			if (!silent) {
+				new Notice(backupPath ? `✅ 已从飞书更新并覆盖本地文件\n备份：${backupPath}` : '✅ 已从飞书更新并覆盖本地文件');
+			}
+			return true;
 		} catch (e) {
 			statusNotice?.hide();
 			await this.recordSyncError(file, 'feishu-to-obsidian', e, '从飞书更新');
-			this.handleError(e as Error, '从飞书更新');
+			if (!silent) {
+				this.handleError(e as Error, '从飞书更新');
+			} else {
+				this.log(`Pull from Feishu failed for ${file.path}: ${this.getErrorMessage(e)}`, 'warn');
+			}
+			return false;
 		}
 	}
 
-	private async localizeFeishuMediaBlocks(markdown: string, blocks: any[], noteBaseName: string, statusNotice?: Notice): Promise<string> {
+	private async localizeFeishuMediaBlocks(markdown: string, blocks: any[], noteBaseName: string, statusNotice?: Notice, silent: boolean = false): Promise<string> {
 		const mediaItems = this.collectFeishuMediaItems(blocks);
 		if (!mediaItems.length) {
 			return markdown;
@@ -1057,7 +1517,7 @@ export default class FeishuPlugin extends Plugin {
 			}
 		}
 
-		if (failedCount > 0) {
+		if (!silent && failedCount > 0) {
 			new Notice(`⚠️ ${failedCount} 个飞书附件下载失败，已保留原始 token 链接`);
 		}
 		return localized;
@@ -1516,6 +1976,7 @@ export default class FeishuPlugin extends Plugin {
 		if (this.syncState) {
 			this.syncState.updateSettings(this.settings);
 		}
+		this.configureScheduledSync(true);
 	}
 
 	/**
@@ -1585,19 +2046,22 @@ export default class FeishuPlugin extends Plugin {
 	/**
 	 * 分享指定文件
 	 */
-	async shareFile(file: TFile, options?: { forceUpdateUrl?: string }): Promise<void> {
+	async shareFile(file: TFile, options?: ShareFileOptions): Promise<boolean> {
 		this.log(`Starting file share process for: ${file.path}`);
+		const silent = options?.silent === true;
 
 		// 创建持续状态提示（可抑制）
-		const statusNotice = this.settings.suppressShareNotices ? undefined : new Notice('🔄 正在分享到飞书...', 0); // 0表示不自动消失
+		const statusNotice = (silent || this.settings.suppressShareNotices) ? undefined : new Notice('🔄 正在分享到飞书...', 0); // 0表示不自动消失
 
 		try {
 			// 检查基本授权状态
 			if (!this.settings.accessToken || !this.settings.userInfo) {
 				this.log('Authorization required', 'warn');
 				statusNotice?.hide();
-				new Notice('❌ 请先在设置中完成飞书授权');
-				return;
+				if (!silent) {
+					new Notice('❌ 请先在设置中完成飞书授权');
+				}
+				return false;
 			}
 
 			// 确保文件已保存到磁盘
@@ -1641,13 +2105,14 @@ export default class FeishuPlugin extends Plugin {
 				processResult.frontMatter,
 				this.settings.titleSource
 			);
+			const syncTarget = options?.syncTargetOverride || this.settings.syncTarget || 'docx';
 			this.log(`Processing file with title: ${title}`);
 
 			// 仅同步到多维表格：不创建/更新飞书云文档（docx）
-			if (this.settings.syncTarget === 'bitable') {
-				await this.syncFileToBitable(file, title, rawContent, processResult, statusNotice);
+			if (syncTarget === 'bitable') {
+				await this.syncFileToBitable(file, title, rawContent, processResult, statusNotice, silent);
 				statusNotice?.hide();
-				return;
+				return true;
 			}
 
 			// 检查是否为更新模式（存在feishushare标记）
@@ -1741,6 +2206,7 @@ export default class FeishuPlugin extends Plugin {
 
 			if (result.success) {
 				let remoteMeta: Awaited<ReturnType<FeishuApiService['getDocumentMeta']>> = null;
+				let completed = true;
 				// 维护 uploadHistory（本地文件 <-> 飞书文档映射），供同步/双链替换使用
 				try {
 					const url = result.url || '';
@@ -1777,17 +2243,34 @@ export default class FeishuPlugin extends Plugin {
 					});
 					await this.saveSettings();
 
-					if (this.settings.syncTarget === 'both') {
-						bitableRecordIdForFile = await this.syncFileToBitable(file, title, rawContent, processResult, statusNotice);
+					if (syncTarget === 'both') {
+						try {
+							bitableRecordIdForFile = await this.syncFileToBitable(file, title, rawContent, processResult, statusNotice, silent);
+						} catch (e) {
+							completed = false;
+							console.error('[feishu-share] Failed to sync Bitable after Feishu doc update', e);
+							this.log(`Failed to sync Bitable after Feishu doc update: ${(e as Error)?.message || String(e)}`, 'warn');
+							await this.recordSyncError(file, 'bitable', e, '同步到多维表格', {
+								docToken: this.extractDocTokenFromUrl(result.url || '') || undefined,
+								url: result.url,
+								remoteRevision: remoteMeta?.revision,
+								remoteUpdatedAt: remoteMeta?.updatedAt,
+								docRemoteRevision: remoteMeta?.revision,
+								docRemoteUpdatedAt: remoteMeta?.updatedAt
+							});
+						}
 					}
 				} catch (e) {
+					completed = false;
 					console.error('[feishu-share] Failed to update upload history / bitable sync', e);
 					this.log(`Failed to update upload history / bitable sync: ${(e as Error)?.message || String(e)}`, 'warn');
 					await this.recordSyncError(file, 'bitable', e, '同步到多维表格或更新映射', {
 						docToken: this.extractDocTokenFromUrl(result.url || '') || undefined,
 						url: result.url,
 						remoteRevision: remoteMeta?.revision,
-						remoteUpdatedAt: remoteMeta?.updatedAt
+						remoteUpdatedAt: remoteMeta?.updatedAt,
+						docRemoteRevision: remoteMeta?.revision,
+						docRemoteUpdatedAt: remoteMeta?.updatedAt
 					});
 				}
 
@@ -1801,18 +2284,20 @@ export default class FeishuPlugin extends Plugin {
 							const currentContent = await this.app.vault.read(file);
 							const updatedContent = this.updateShareTimestamp(currentContent);
 							await this.app.vault.modify(file, updatedContent);
-							this.syncState.upsert({
-								filePath: file.path,
-								title,
-								content: updatedContent,
-								docToken: this.extractDocTokenFromUrl(result.url || '') || undefined,
-								url: result.url,
-								bitableRecordId: bitableRecordIdForFile,
-								direction: 'obsidian-to-feishu',
-								remoteRevision: remoteMeta?.revision,
-								remoteUpdatedAt: remoteMeta?.updatedAt
-							});
-							await this.saveSettings();
+							if (completed) {
+								this.syncState.upsert({
+									filePath: file.path,
+									title,
+									content: updatedContent,
+									docToken: this.extractDocTokenFromUrl(result.url || '') || undefined,
+									url: result.url,
+									bitableRecordId: bitableRecordIdForFile,
+									direction: 'obsidian-to-feishu',
+									remoteRevision: remoteMeta?.revision,
+									remoteUpdatedAt: remoteMeta?.updatedAt
+								});
+								await this.saveSettings();
+							}
 							this.log('Share timestamp updated successfully');
 						} catch (error) {
 							this.log(`Failed to update share timestamp: ${error.message}`, 'warn');
@@ -1833,18 +2318,20 @@ export default class FeishuPlugin extends Plugin {
 							const currentContent = await this.app.vault.read(file);
 							const updatedContent = this.markdownProcessor.addShareMarkToFrontMatter(currentContent, result.url, (file.stat as any)?.ctime, file.basename);
 							await this.app.vault.modify(file, updatedContent);
-							this.syncState.upsert({
-								filePath: file.path,
-								title,
-								content: updatedContent,
-								docToken: this.extractDocTokenFromUrl(result.url || '') || undefined,
-								url: result.url,
-								bitableRecordId: bitableRecordIdForFile,
-								direction: 'obsidian-to-feishu',
-								remoteRevision: remoteMeta?.revision,
-								remoteUpdatedAt: remoteMeta?.updatedAt
-							});
-							await this.saveSettings();
+							if (completed) {
+								this.syncState.upsert({
+									filePath: file.path,
+									title,
+									content: updatedContent,
+									docToken: this.extractDocTokenFromUrl(result.url || '') || undefined,
+									url: result.url,
+									bitableRecordId: bitableRecordIdForFile,
+									direction: 'obsidian-to-feishu',
+									remoteRevision: remoteMeta?.revision,
+									remoteUpdatedAt: remoteMeta?.updatedAt
+								});
+								await this.saveSettings();
+							}
 							this.log('Share mark added/updated successfully');
 
 							// 如果URL发生了变化，显示特殊通知
@@ -1860,7 +2347,7 @@ export default class FeishuPlugin extends Plugin {
 					}
 				}
 
-				if (bitableRecordIdForFile) {
+				if (completed && bitableRecordIdForFile) {
 					try {
 						const updatedContent = await this.writeRecordIdToFileFrontMatter(file, bitableRecordIdForFile);
 						if (updatedContent) {
@@ -1882,7 +2369,14 @@ export default class FeishuPlugin extends Plugin {
 					}
 				}
 
-				this.showSuccessNotification(result);
+				if (completed) {
+					if (!silent) {
+						this.showSuccessNotification(result);
+					}
+				} else if (!silent && !this.settings.suppressShareNotices) {
+					new Notice('⚠️ 飞书文档已更新，但后续映射或多维表格同步失败，请查看同步状态后重试');
+				}
+				return completed;
 			} else {
 				const operation = isUpdateMode.shouldUpdate ? '更新' : '分享';
 				this.log(`${operation} failed: ${result.error}`, 'error');
@@ -1890,19 +2384,29 @@ export default class FeishuPlugin extends Plugin {
 					docToken: this.extractDocTokenFromUrl(result.url || '') || undefined,
 					url: result.url
 				});
-				new Notice(`❌ ${operation}失败：${result.error}`);
+				if (!silent) {
+					new Notice(`❌ ${operation}失败：${result.error}`);
+				}
+				return false;
 			}
 
 		} catch (error) {
 			// 确保隐藏状态提示
 			statusNotice?.hide();
 			await this.recordSyncError(file, 'obsidian-to-feishu', error, '文件分享');
-			this.handleError(error as Error, '文件分享');
+			if (!silent) {
+				this.handleError(error as Error, '文件分享');
+			} else {
+				this.log(`Share failed for ${file.path}: ${this.getErrorMessage(error)}`, 'warn');
+			}
+			return false;
 		}
 	}
 
-	private async pullFileFromBitable(file: TFile): Promise<void> {
-		const statusNotice = this.settings.suppressShareNotices ? undefined : new Notice('📊 正在从多维表格拉取...', 0);
+	private async pullFileFromBitable(file: TFile, options?: SyncExecutionOptions): Promise<boolean> {
+		const interactive = options?.interactive !== false;
+		const silent = options?.silent === true;
+		const statusNotice = (silent || this.settings.suppressShareNotices) ? undefined : new Notice('📊 正在从多维表格拉取...', 0);
 		try {
 			if (!this.settings.bitableAppToken || !this.settings.bitableTableId) {
 				throw new Error('请先在设置中填写 Bitable App Token 和 Bitable Table ID');
@@ -1937,6 +2441,24 @@ export default class FeishuPlugin extends Plugin {
 
 			const localChange = this.syncState.getLocalChange(file.path, current);
 			if (localChange.hasLocalChanges && nextContent !== current) {
+				if (!interactive) {
+					this.syncState.upsert({
+						filePath: file.path,
+						title: file.basename,
+						content: current,
+						docToken: existing && existing.docToken ? existing.docToken : state?.docToken,
+						url: existing && existing.url ? existing.url : state?.url,
+						bitableRecordId: record.recordId || recordId,
+						direction: 'bitable',
+						status: 'conflict',
+						error: '定时同步检测到本地存在未同步改动，已跳过多维表格覆盖',
+						remoteHash,
+						remoteUpdatedAt: record.updatedAt
+					});
+					await this.saveSettings();
+					this.log(`Scheduled sync skipped Bitable overwrite for ${file.path}`, 'warn');
+					return false;
+				}
 				statusNotice?.hide();
 				const shouldOverwrite = await this.confirmOverwriteLocalChanges(file.basename, localChange.lastHash || '', localChange.currentHash, '多维表格');
 				if (!shouldOverwrite) {
@@ -1954,8 +2476,10 @@ export default class FeishuPlugin extends Plugin {
 						remoteUpdatedAt: record.updatedAt
 					});
 					await this.saveSettings();
-					new Notice('已取消：本地内容有未同步改动');
-					return;
+					if (!silent) {
+						new Notice('已取消：本地内容有未同步改动');
+					}
+					return false;
 				}
 				statusNotice?.setMessage('💾 正在写入本地文件...');
 			}
@@ -1993,46 +2517,39 @@ export default class FeishuPlugin extends Plugin {
 			});
 			await this.saveSettings();
 			statusNotice?.hide();
-			new Notice(backupPath ? `✅ 已从多维表格更新本地文件\n备份：${backupPath}` : '✅ 已从多维表格更新本地文件');
+			if (!silent) {
+				new Notice(backupPath ? `✅ 已从多维表格更新本地文件\n备份：${backupPath}` : '✅ 已从多维表格更新本地文件');
+			}
+			return true;
 		} catch (e) {
 			statusNotice?.hide();
 			await this.recordSyncError(file, 'bitable', e, '从多维表格更新');
-			this.handleError(e as Error, '从多维表格更新');
+			if (!silent) {
+				this.handleError(e as Error, '从多维表格更新');
+			} else {
+				this.log(`Pull from Bitable failed for ${file.path}: ${this.getErrorMessage(e)}`, 'warn');
+			}
+			return false;
 		}
 	}
 
 	private bitableFieldToPlainText(value: any): string {
-		if (value === undefined || value === null) return '';
-		if (typeof value === 'string') return value;
-		if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-		if (Array.isArray(value)) {
-			return value.map((item) => this.bitableFieldToPlainText(item)).filter((item) => item.length > 0).join(', ');
-		}
-		if (typeof value === 'object') {
-			if (typeof value.text === 'string') return value.text;
-			if (typeof value.name === 'string') return value.name;
-			if (typeof value.link === 'string') return value.link;
-			if (typeof value.url === 'string') return value.url;
-			if (typeof value.value === 'string') return value.value;
-			return JSON.stringify(value);
-		}
-		return String(value);
+		return bitableFieldToPlainText(value);
 	}
 
 	private applyBitableFieldsToFrontMatter(content: string, fields: Record<string, any>, recordId: string, mapping?: Record<string, string>): string {
 		let next = content;
 		const simpleFields = ['title', 'status', 'link', 'created', 'updated', 'excerpt', 'author', 'slug', 'folder'];
 		for (const key of simpleFields) {
-			const value = this.bitableFieldToPlainText(this.getBitableFieldValue(fields, key, mapping));
-			if (value) {
+			const value = bitableFieldToFrontMatterValue(this.getBitableFieldValue(fields, key, mapping));
+			if (value !== undefined) {
 				next = this.setFrontMatterField(next, key, this.formatFrontMatterValue(value));
 			}
 		}
 		for (const key of ['tags', 'aliases']) {
-			const raw = this.getBitableFieldValue(fields, key, mapping);
-			if (Array.isArray(raw)) {
-				const arr = raw.map((item) => this.bitableFieldToPlainText(item)).filter((item) => item.length > 0);
-				next = this.setFrontMatterField(next, key, JSON.stringify(arr));
+			const value = bitableFieldToFrontMatterValue(this.getBitableFieldValue(fields, key, mapping), 4);
+			if (Array.isArray(value) && value.length > 0) {
+				next = this.setFrontMatterField(next, key, JSON.stringify(value));
 			}
 		}
 		if (recordId) {
@@ -2041,7 +2558,13 @@ export default class FeishuPlugin extends Plugin {
 		return next;
 	}
 
-	private formatFrontMatterValue(value: string): string {
+	private formatFrontMatterValue(value: string | number | boolean | string[]): string {
+		if (Array.isArray(value)) {
+			return JSON.stringify(value);
+		}
+		if (typeof value === 'number' || typeof value === 'boolean') {
+			return String(value);
+		}
 		if (/^(true|false|null|\d+(\.\d+)?)$/i.test(value)) {
 			return value;
 		}
@@ -2091,7 +2614,7 @@ export default class FeishuPlugin extends Plugin {
 		return mapped;
 	}
 
-	private async syncFileToBitable(file: TFile, title: string, rawContent: string, processResult: any, statusNotice?: Notice): Promise<string | undefined> {
+	private async syncFileToBitable(file: TFile, title: string, rawContent: string, processResult: any, statusNotice?: Notice, silent: boolean = false): Promise<string | undefined> {
 		try {
 			if (!this.settings.bitableAppToken || !this.settings.bitableTableId) {
 				throw new Error('请先在设置中填写 Bitable App Token 和 Bitable Table ID');
@@ -2137,7 +2660,7 @@ export default class FeishuPlugin extends Plugin {
 				throw new Error('未获取到多维表格字段元数据（items 为空），请检查 TableId 是否指向正确数据表、以及应用是否有该表权限');
 			}
 			const allowed = new Set(metaFields.map((f) => f.name));
-			const typeByName = new Map(metaFields.map((f) => [f.name, f.type] as const));
+			const fieldMetaByName = new Map(metaFields.map((f) => [f.name, f] as const));
 			const fieldMapping = this.getBitableFieldMapping();
 			const folder = file.parent ? file.parent.path : '';
 			const slug = file.basename;
@@ -2185,40 +2708,6 @@ export default class FeishuPlugin extends Plugin {
 			const aliasesArr = normalizeStringArray(frontmatter && frontmatter.aliases);
 			const excerptStr = (frontmatter && typeof frontmatter.excerpt === 'string') ? frontmatter.excerpt : '';
 			const authorStr = (frontmatter && typeof frontmatter.author === 'string') ? frontmatter.author : '';
-			const convertByType = (value: any, type: number | undefined) => {
-				if (value === undefined || value === null) {
-					return type === 4 ? [] : '';
-				}
-				if (!type || type <= 0) {
-					return value;
-				}
-				if (type === 1) {
-					return String(value);
-				}
-				if (type === 2) {
-					return Array.isArray(value) ? (value[0] ? String(value[0]) : '') : String(value);
-				}
-				if (type === 3) {
-					const n = typeof value === 'number' ? value : Number(value);
-					return Number.isFinite(n) ? n : 0;
-				}
-				if (type === 4) {
-					if (Array.isArray(value)) {
-						return value.map((v) => String(v)).filter((v) => v.length > 0);
-					}
-					const s = String(value);
-					return s ? [s] : [];
-				}
-				if (type === 5) {
-					if (typeof value === 'number') {
-						return value;
-					}
-					const parsed = Date.parse(String(value));
-					return Number.isFinite(parsed) ? parsed : now;
-				}
-				return value;
-			};
-
 			const candidateFields: Record<string, any> = {
 				title,
 				content: contentStr,
@@ -2254,7 +2743,7 @@ export default class FeishuPlugin extends Plugin {
 				? Object.fromEntries(Object.entries(afterExclude).filter(([k]) => allowed.has(k)))
 				: afterExclude;
 			const fields: Record<string, any> = Object.fromEntries(
-				Object.entries(picked).map(([k, v]) => [k, convertByType(v, typeByName.get(k))])
+				Object.entries(picked).map(([k, v]) => [k, normalizeBitableWriteValue(v, fieldMetaByName.get(k), now)])
 			);
 
 			const upsert = await this.feishuApi.upsertBitableRecord({
@@ -2282,8 +2771,7 @@ export default class FeishuPlugin extends Plugin {
 			const recordIdFieldName = this.getBitableFieldName('recordId', fieldMapping);
 			if (upsert.recordId && allowed.has(recordIdFieldName)) {
 				try {
-					const ridType = typeByName.get(recordIdFieldName);
-					const ridValue = convertByType(upsert.recordId, ridType);
+					const ridValue = normalizeBitableWriteValue(upsert.recordId, fieldMetaByName.get(recordIdFieldName), now);
 					await this.feishuApi.upsertBitableRecord({
 						appToken: this.settings.bitableAppToken,
 						tableId: this.settings.bitableTableId,
@@ -2357,7 +2845,7 @@ export default class FeishuPlugin extends Plugin {
 				}
 			}
 
-			if (!this.settings.suppressShareNotices) {
+			if (!silent && !this.settings.suppressShareNotices) {
 				new Notice('✅ 已同步到多维表格');
 			}
 			return upsert.recordId || recordId;

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Feishu OAuth Callback</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --text: #172033;
+      --muted: #5d6b88;
+      --accent: #1769ff;
+      --accent-2: #0f4ec7;
+      --border: #d8e1f0;
+      --danger: #cc334f;
+      --success: #1b7f5a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at top left, rgba(23, 105, 255, 0.10), transparent 30%),
+        linear-gradient(180deg, #f8fbff 0%, var(--bg) 100%);
+      font: 16px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      padding: 24px;
+    }
+    .card {
+      width: min(560px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 28px;
+      box-shadow: 0 16px 40px rgba(23, 32, 51, 0.10);
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 8px;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+    }
+    .status {
+      margin-top: 20px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: #eef4ff;
+      color: var(--text);
+    }
+    .status.success { background: #edf8f2; color: var(--success); }
+    .status.error { background: #fff1f3; color: var(--danger); }
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 20px;
+    }
+    button, a.button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      padding: 12px 18px;
+      font: inherit;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 120ms ease, background 120ms ease;
+    }
+    button:hover, a.button:hover {
+      background: var(--accent-2);
+      transform: translateY(-1px);
+    }
+    .secondary {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--border);
+    }
+    .secondary:hover {
+      background: #f2f6ff;
+    }
+    pre {
+      margin: 18px 0 0;
+      padding: 14px;
+      border-radius: 12px;
+      background: #111827;
+      color: #d1d5db;
+      overflow: auto;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      display: none;
+    }
+    .hint {
+      margin-top: 18px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>飞书授权回调</h1>
+    <p>这个页面会把飞书返回的授权参数转发给 Obsidian 插件。</p>
+    <div id="status" class="status">正在准备回传到 Obsidian…</div>
+    <div class="actions">
+      <a id="openBtn" class="button" href="#">打开 Obsidian</a>
+      <button id="copyBtn" class="secondary" type="button">复制当前回调地址</button>
+      <button id="debugBtn" class="secondary" type="button">显示调试信息</button>
+    </div>
+    <div class="hint" id="hint">
+      如果没有自动唤起 Obsidian，请点击“打开 Obsidian”，或者把当前地址复制到插件的手动授权输入框中。
+    </div>
+    <pre id="debug"></pre>
+  </main>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const statusEl = document.getElementById('status');
+    const openBtn = document.getElementById('openBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const debugBtn = document.getElementById('debugBtn');
+    const debugEl = document.getElementById('debug');
+
+    const obsidianUrl = `obsidian://feishu-auth?${params.toString()}`;
+    const hasCode = !!params.get('code');
+    const hasError = !!params.get('error');
+
+    openBtn.href = obsidianUrl;
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        copyBtn.textContent = '已复制';
+      } catch {
+        copyBtn.textContent = '复制失败';
+      }
+    });
+    debugBtn.addEventListener('click', () => {
+      debugEl.style.display = debugEl.style.display === 'block' ? 'none' : 'block';
+    });
+
+    debugEl.textContent = JSON.stringify({
+      href: window.location.href,
+      params: Object.fromEntries(params.entries()),
+      obsidianUrl
+    }, null, 2);
+
+    if (hasError) {
+      statusEl.className = 'status error';
+      statusEl.textContent = `飞书返回了错误：${params.get('error_description') || params.get('error')}`;
+    } else if (hasCode) {
+      statusEl.className = 'status success';
+      statusEl.textContent = '授权成功，正在尝试唤起 Obsidian…';
+      window.location.href = obsidianUrl;
+      setTimeout(() => {
+        window.location.href = obsidianUrl;
+      }, 1200);
+    } else {
+      statusEl.className = 'status error';
+      statusEl.textContent = '当前回调地址里没有 code 参数，无法完成授权。';
+    }
+  </script>
+</body>
+</html>

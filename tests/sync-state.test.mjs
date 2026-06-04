@@ -277,6 +277,45 @@ test('remote updatedAt evaluation uses the requested target-specific baseline', 
 	assert.equal(bitableEvaluation.hasRemoteChanges, false);
 });
 
+test('error snapshots can preserve split doc and Bitable observations without advancing baselines', () => {
+	const settings = createSettings();
+	const service = new SyncStateService(settings);
+	service.upsert({
+		filePath: 'Notes/both-error.md',
+		content: 'baseline',
+		direction: 'bitable',
+		status: 'synced',
+		docRemoteRevision: 'rev-1',
+		docRemoteUpdatedAt: 100,
+		bitableRemoteHash: 'hash-1',
+		bitableRemoteUpdatedAt: 200
+	});
+
+	const state = service.upsert({
+		filePath: 'Notes/both-error.md',
+		content: 'draft',
+		direction: 'bitable',
+		status: 'error',
+		error: 'partial sync failed',
+		docRemoteRevision: 'rev-2',
+		docRemoteUpdatedAt: 300,
+		bitableRemoteHash: 'hash-2',
+		bitableRemoteUpdatedAt: 400
+	});
+
+	assert.equal(state.status, 'error');
+	assert.equal(state.localHash, service.hashContent('baseline'));
+	assert.equal(state.docRemoteRevision, 'rev-1');
+	assert.equal(state.docRemoteUpdatedAt, 100);
+	assert.equal(state.bitableRemoteHash, 'hash-1');
+	assert.equal(state.bitableRemoteUpdatedAt, 200);
+	assert.equal(state.observedDocRemoteRevision, 'rev-2');
+	assert.equal(state.observedDocRemoteUpdatedAt, 300);
+	assert.equal(state.observedBitableRemoteHash, 'hash-2');
+	assert.equal(state.observedBitableRemoteUpdatedAt, 400);
+	assert.equal(state.lastError, 'partial sync failed');
+});
+
 test('upload history can be migrated into sync state entries', () => {
 	const settings = createSettings({
 		uploadHistory: [{

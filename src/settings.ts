@@ -4,7 +4,7 @@ import { ManualAuthModal } from './manual-auth-modal';
 import { FolderSelectModal } from './folder-select-modal';
 import { WikiSelectModal } from './wiki-select-modal';
 import { buildSyncStatusView, filterSyncStates, formatSyncBatchSummary, formatSyncStatus, getSyncStatusCounts, searchSyncStates, sortSyncStates } from './sync-diagnostics';
-import type { SyncStateItem } from './types';
+import type { BitableTableOption, ScheduledSyncReport, ScheduledSyncScope, SyncStateItem } from './types';
 import type { SyncStatusCounts, SyncStatusFilter } from './sync-diagnostics';
 
 export class FeishuSettingTab extends PluginSettingTab {
@@ -161,9 +161,9 @@ export class FeishuSettingTab extends PluginSettingTab {
 		// 回调地址
 		new Setting(containerEl)
 			.setName('OAuth回调地址')
-			.setDesc('obsidian需web回调中转，例如：https://md2feishu.xinqi.life/oauth-callback')
+			.setDesc('需要填写可公网访问的回调页；仓库已附带 oauth-callback/index.html，可部署到任意静态站点')
 			.addText(text => text
-				.setPlaceholder('https://md2feishu.xinqi.life/oauth-callback')
+				.setPlaceholder('https://your-domain.example/feishu-oauth-callback/')
 				.setValue(this.plugin.settings.callbackUrl)
 				.onChange(async (value: string) => {
 					this.plugin.settings.callbackUrl = value.trim();
@@ -521,6 +521,98 @@ export class FeishuSettingTab extends PluginSettingTab {
 		}
 
 		new Setting(containerEl)
+			.setName('启用定时智能同步')
+			.setDesc('按固定间隔执行非交互式智能同步；遇到冲突时只记录状态，不弹出选择框')
+			.addToggle(toggle => {
+				toggle
+					.setValue(!!this.plugin.settings.enableScheduledSync)
+					.onChange(async (value: boolean) => {
+						this.plugin.settings.enableScheduledSync = value;
+						await this.plugin.saveSettings();
+						this.display();
+					});
+			});
+
+		if (this.plugin.settings.enableScheduledSync) {
+			new Setting(containerEl)
+				.setName('定时同步间隔（分钟）')
+				.setDesc('最小 5 分钟，默认 30 分钟')
+				.addText(text => text
+					.setPlaceholder('30')
+					.setValue(String(this.plugin.settings.scheduledSyncIntervalMinutes || 30))
+					.onChange(async (value: string) => {
+						const parsed = Number(value);
+						this.plugin.settings.scheduledSyncIntervalMinutes = Number.isFinite(parsed)
+							? Math.max(5, Math.min(24 * 60, Math.round(parsed)))
+							: 30;
+						await this.plugin.saveSettings();
+					}));
+
+			new Setting(containerEl)
+				.setName('定时同步范围')
+				.setDesc('推荐选择“已建立映射的文件”，避免依赖当前活动笔记')
+				.addDropdown(dropdown => {
+					dropdown
+						.addOption('tracked_files', '已建立映射的文件')
+						.addOption('current_file', '当前文件')
+						.addOption('current_folder', '当前文件夹（同级）')
+						.addOption('custom_folder', '自定义文件夹')
+						.addOption('vault_all', '全库')
+						.setValue((this.plugin.settings.scheduledSyncScope || 'tracked_files') as ScheduledSyncScope)
+						.onChange(async (value: ScheduledSyncScope) => {
+							this.plugin.settings.scheduledSyncScope = value;
+							await this.plugin.saveSettings();
+							this.display();
+						});
+				});
+
+			if ((this.plugin.settings.scheduledSyncScope || 'tracked_files') === 'custom_folder') {
+				new Setting(containerEl)
+					.setName('定时同步文件夹路径')
+					.setDesc('仅对定时同步生效')
+					.addText(text => text
+						.setPlaceholder('例如：3-Task/IOTO研发')
+						.setValue(this.plugin.settings.scheduledSyncCustomFolder || '')
+						.onChange(async (value: string) => {
+							this.plugin.settings.scheduledSyncCustomFolder = value.trim();
+							await this.plugin.saveSettings();
+						}));
+			}
+
+			new Setting(containerEl)
+				.setName('启动后执行一次')
+				.setDesc('Obsidian 启动约 15 秒后自动跑一次定时同步范围')
+				.addToggle(toggle => {
+					toggle
+						.setValue(!!this.plugin.settings.scheduledSyncRunOnStartup)
+						.onChange(async (value: boolean) => {
+							this.plugin.settings.scheduledSyncRunOnStartup = value;
+							await this.plugin.saveSettings();
+						});
+				});
+
+			new Setting(containerEl)
+				.setName('立即执行一次定时同步')
+				.setDesc('按当前定时同步范围手动执行一次非交互式智能同步')
+				.addButton(btn => {
+					btn
+						.setButtonText('立即执行')
+						.setCta()
+						.onClick(async () => {
+							await this.plugin.runScheduledSmartSync('manual', true);
+							this.display();
+						});
+				});
+			const reportText = this.describeScheduledSyncReport(this.plugin.settings.scheduledSyncReport);
+			if (reportText) {
+				const reportEl = containerEl.createDiv({ cls: 'setting-item-description' });
+				reportEl.style.marginTop = '-4px';
+				reportEl.style.marginBottom = '12px';
+				reportEl.setText(reportText);
+			}
+		}
+
+		new Setting(containerEl)
 			.setName('上传历史映射')
 			.setDesc('用于将笔记内的 [[双链]] 自动替换为对应飞书文档链接，并支持“原 URL 覆盖更新”')
 			.addButton(btn => {
@@ -561,11 +653,16 @@ export class FeishuSettingTab extends PluginSettingTab {
 					.setPlaceholder('bascn...')
 					.setValue(this.plugin.settings.bitableAppToken || '')
 					.onChange(async (value: string) => {
+						const prevAppToken = this.plugin.settings.bitableAppToken || '';
 						const { cleaned } = normalizeBitableInput(value);
 						const extracted = extractBitableFromText(cleaned);
 						this.plugin.settings.bitableAppToken = (extracted.appToken || cleaned).trim();
 						if (extracted.tableId) {
 							this.plugin.settings.bitableTableId = extracted.tableId.trim();
+						}
+						if ((this.plugin.settings.bitableAppToken || '') !== prevAppToken) {
+							this.plugin.settings.bitableTableOptionsCache = [];
+							this.plugin.settings.bitableFieldNamesCache = [];
 						}
 						await this.plugin.saveSettings();
 					}));
@@ -577,14 +674,20 @@ export class FeishuSettingTab extends PluginSettingTab {
 					.setPlaceholder('tbl...')
 					.setValue(this.plugin.settings.bitableTableId || '')
 					.onChange(async (value: string) => {
+						const prevTableId = this.plugin.settings.bitableTableId || '';
 						const { cleaned } = normalizeBitableInput(value);
 						const extracted = extractBitableFromText(cleaned);
 						this.plugin.settings.bitableTableId = (extracted.tableId || cleaned).trim();
 						if (extracted.appToken) {
 							this.plugin.settings.bitableAppToken = extracted.appToken.trim();
 						}
+						if ((this.plugin.settings.bitableTableId || '') !== prevTableId) {
+							this.plugin.settings.bitableFieldNamesCache = [];
+						}
 						await this.plugin.saveSettings();
 					}));
+
+			this.renderBitableTableAssistant(containerEl);
 
 			new Setting(containerEl)
 				.setName('不同步字段')
@@ -613,6 +716,75 @@ export class FeishuSettingTab extends PluginSettingTab {
 
 
 
+	}
+
+	private renderBitableTableAssistant(containerEl: HTMLElement): void {
+		const panel = containerEl.createDiv({ cls: 'bitable-field-mapping-panel' });
+		const toolbar = panel.createDiv({ cls: 'bitable-field-mapping-toolbar' });
+		toolbar.createDiv({ text: '数据表选择助手', cls: 'bitable-field-mapping-title' });
+		const actions = toolbar.createDiv({ cls: 'bitable-field-mapping-actions' });
+		const loadButton = actions.createEl('button', { text: '读取数据表' });
+		const hint = panel.createDiv({ cls: 'bitable-field-mapping-hint' });
+		const tables = this.getCachedBitableTableOptions();
+		const currentTableId = String(this.plugin.settings.bitableTableId || '').trim();
+
+		const renderTableSelect = (target: HTMLElement, options: BitableTableOption[]) => {
+			const grid = target.createDiv({ cls: 'bitable-field-mapping-grid' });
+			grid.createDiv({ text: '选择数据表', cls: 'bitable-field-mapping-label' });
+			const select = grid.createEl('select', { cls: 'bitable-field-mapping-select' });
+			select.createEl('option', { text: '保留手动填写的 Table ID', value: '' });
+			for (const option of options) {
+				const label = option.name ? `${option.name} (${option.tableId})` : option.tableId;
+				select.createEl('option', { text: label, value: option.tableId });
+			}
+			if (currentTableId && options.some((option) => option.tableId === currentTableId)) {
+				select.value = currentTableId;
+			}
+			select.addEventListener('change', async () => {
+				const next = String(select.value || '').trim();
+				if (next && next !== this.plugin.settings.bitableTableId) {
+					this.plugin.settings.bitableTableId = next;
+					this.plugin.settings.bitableFieldNamesCache = [];
+					await this.plugin.saveSettings();
+					this.display();
+				}
+			});
+		};
+
+		if (!tables.length) {
+			hint.setText('先填写或粘贴 App Token，再点击“读取数据表”。若读取失败，仍可手动填写 Table ID。');
+		} else {
+			renderTableSelect(panel, tables);
+			hint.setText(`已读取 ${tables.length} 张数据表${currentTableId ? `；当前 Table ID：${currentTableId}` : ''}`);
+		}
+
+		loadButton.onclick = async () => {
+			try {
+				if (!this.plugin.settings.bitableAppToken) {
+					new Notice('❌ 请先填写 Bitable App Token');
+					return;
+				}
+				loadButton.disabled = true;
+				loadButton.textContent = '读取中...';
+				const result = await this.plugin.feishuApi.getBitableTables(this.plugin.settings.bitableAppToken);
+				if (!result.success || !result.tables) {
+					new Notice(`❌ 读取数据表失败：${result.error || '未知错误'}`);
+					return;
+				}
+				this.setCachedBitableTableOptions(result.tables);
+				if (!this.plugin.settings.bitableTableId && result.tables.length === 1) {
+					this.plugin.settings.bitableTableId = result.tables[0].tableId;
+				}
+				await this.plugin.saveSettings();
+				new Notice(`✅ 已读取 ${result.tables.length} 张数据表`);
+				this.display();
+			} catch (error) {
+				new Notice(`❌ 读取数据表失败：${(error as Error).message}`);
+			} finally {
+				loadButton.disabled = false;
+				loadButton.textContent = '读取数据表';
+			}
+		};
 	}
 
 	private renderBitableFieldMappingHint(containerEl: HTMLElement): void {
@@ -764,8 +936,65 @@ export class FeishuSettingTab extends PluginSettingTab {
 		return Array.isArray(raw) ? raw.map((name) => String(name)).filter((name) => !!name) : [];
 	}
 
+	private getCachedBitableTableOptions(): BitableTableOption[] {
+		const raw = this.plugin.settings.bitableTableOptionsCache;
+		return Array.isArray(raw)
+			? raw
+				.map((item) => ({
+					tableId: String((item as BitableTableOption)?.tableId || '').trim(),
+					name: String((item as BitableTableOption)?.name || '').trim(),
+					revision: typeof (item as BitableTableOption)?.revision === 'number'
+						? (item as BitableTableOption).revision
+						: undefined
+				}))
+				.filter((item) => !!item.tableId)
+			: [];
+	}
+
 	private setCachedBitableFieldNames(names: string[]): void {
 		this.plugin.settings.bitableFieldNamesCache = [...new Set(names.map((name) => String(name).trim()).filter((name) => !!name))];
+	}
+
+	private setCachedBitableTableOptions(tables: BitableTableOption[]): void {
+		this.plugin.settings.bitableTableOptionsCache = tables
+			.map((item) => ({
+				tableId: String(item?.tableId || '').trim(),
+				name: String(item?.name || '').trim(),
+				revision: typeof item?.revision === 'number' ? item.revision : undefined
+			}))
+			.filter((item) => !!item.tableId);
+	}
+
+	private describeScheduledSyncReport(report?: ScheduledSyncReport): string {
+		if (!report || !report.status) {
+			return '';
+		}
+		const statusMap: Record<string, string> = {
+			idle: '未开始',
+			running: '执行中',
+			success: '成功',
+			partial: '部分成功',
+			failed: '失败',
+			skipped: '已跳过',
+			paused: '已暂停'
+		};
+		const parts = [`最近定时同步：${statusMap[report.status] || report.status}`];
+		if (report.lastRunAt) {
+			parts.push(`时间 ${new Date(report.lastRunAt).toLocaleString()}`);
+		}
+		if (typeof report.successCount === 'number' || typeof report.failedCount === 'number') {
+			parts.push(`成功 ${report.successCount || 0}，失败 ${report.failedCount || 0}`);
+		}
+		if (report.failureStreak) {
+			parts.push(`连续失败 ${report.failureStreak} 次`);
+		}
+		if (report.pauseUntil && report.pauseUntil > Date.now()) {
+			parts.push(`恢复时间 ${new Date(report.pauseUntil).toLocaleString()}`);
+		}
+		if (report.message) {
+			parts.push(report.message);
+		}
+		return parts.join(' | ');
 	}
 
 	private renderHistoryPanel(containerEl: HTMLElement): void {
@@ -909,8 +1138,12 @@ export class FeishuSettingTab extends PluginSettingTab {
 				const state = states[i];
 				notice.setMessage(`正在智能同步 ${i + 1}/${states.length}: ${state.title || state.filePath}`);
 				try {
-					await this.plugin.smartSyncFileByPath(state.filePath);
-					succeeded += 1;
+					const ok = await this.plugin.smartSyncFileByPath(state.filePath);
+					if (ok) {
+						succeeded += 1;
+					} else {
+						failedTitles.push(state.title || state.filePath || `第 ${i + 1} 项`);
+					}
 				} catch (e) {
 					failedTitles.push(state.title || state.filePath || `第 ${i + 1} 项`);
 					import('./debug').then(({ Debug }) => Debug.warn('Batch smart sync item failed:', e));

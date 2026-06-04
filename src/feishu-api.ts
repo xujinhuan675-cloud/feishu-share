@@ -12,6 +12,9 @@ import {
 	FeishuBlockCreateResponse,
 	PlaceholderBlock,
 	SubDocumentResult,
+	BitableFieldMeta,
+	BitableTableOption,
+	InlineDocTokenInfo,
 	WikiSpace,
 	WikiNode,
 	WikiSpaceListResponse,
@@ -21,6 +24,8 @@ import {
 import { FEISHU_CONFIG, FEISHU_ERROR_MESSAGES } from './constants';
 import { Debug } from './debug';
 import { MarkdownProcessor } from './markdown-processor';
+import { buildDescendantPayloadFromConvertedData, collectDocxUploadCompatibilityWarnings } from './docx-convert';
+import { buildGeneratedDocBlock, type GeneratedDocStructure } from './feishu-doc-blocks';
 
 export type FeishuDocumentMeta = {
 	documentId: string;
@@ -552,7 +557,7 @@ export class FeishuApiService {
 		}).join('');
 	}
 
-	private async postProcessUploadedDocument(documentId: string, markdownContent: string, statusNotice?: Notice): Promise<void> {
+	private async postProcessUploadedDocument(documentId: string, markdownContent: string, statusNotice?: Notice, inlineDocTokens: InlineDocTokenInfo[] = []): Promise<void> {
 		if (!documentId || !markdownContent) {
 			return;
 		}
@@ -563,6 +568,7 @@ export class FeishuApiService {
 		await new Promise(resolve => setTimeout(resolve, 2000));
 		await this.processHighlightsInDocument(documentId, markdownContent, statusNotice);
 		await this.processDocumentLinksInDocument(documentId, markdownContent, statusNotice);
+		await this.processInlineDocTokensInDocument(documentId, inlineDocTokens, statusNotice);
 	}
 
 	private async processHighlightsInDocument(documentId: string, markdownContent: string, statusNotice?: Notice): Promise<void> {
@@ -829,6 +835,40 @@ export class FeishuApiService {
 			}
 		} catch (error) {
 			Debug.warn('⚠️ processDocumentLinksInDocument failed (ignored):', error);
+		}
+	}
+
+	private async processInlineDocTokensInDocument(documentId: string, tokens: InlineDocTokenInfo[], statusNotice?: Notice): Promise<void> {
+		try {
+			if (!Array.isArray(tokens) || tokens.length === 0) {
+				return;
+			}
+
+			if (statusNotice) {
+				statusNotice.setMessage(`🧩 正在处理 ${tokens.length} 个富文本占位...`);
+			}
+
+			const tokenMap = new Map(tokens.map((token) => [token.placeholder, token]));
+			const placeholderBlocks = await this.findPlaceholderBlocksForInlineTokens(documentId, tokens);
+			let processedCount = 0;
+
+			for (const placeholderBlock of placeholderBlocks) {
+				const token = tokenMap.get(placeholderBlock.placeholder);
+				if (!token) {
+					continue;
+				}
+
+				try {
+					await this.replacePlaceholderWithInlineDocToken(documentId, placeholderBlock.blockId, placeholderBlock.placeholder, token);
+					processedCount++;
+				} catch (error) {
+					Debug.warn(`⚠️ Failed to replace inline token ${placeholderBlock.placeholder}:`, error);
+				}
+			}
+
+			Debug.log(`✅ Inline doc tokens processed: ${processedCount}/${tokens.length}`);
+		} catch (error) {
+			Debug.warn('⚠️ processInlineDocTokensInDocument failed (ignored):', error);
 		}
 	}
 
@@ -1131,11 +1171,382 @@ export class FeishuApiService {
 		}
 	}
 
+	private normalizeDocumentTitle(title: string): string {
+		return title.endsWith('.md') ? title.slice(0, -3) : title;
+	}
+
+	private getDocumentUrl(documentToken: string): string {
+		return `https://feishu.cn/docx/${documentToken}`;
+	}
+
+	private extractCreatedDocumentToken(data: any): string {
+		return String(
+			data?.data?.document?.document_id ||
+			data?.data?.document?.document_token ||
+			data?.data?.document_id ||
+			data?.data?.document_token ||
+			data?.data?.obj_token ||
+			data?.data?.token ||
+			''
+		).trim();
+	}
+
+	private async createEmptyDocument(title: string): Promise<{ success: boolean; documentToken?: string; error?: string }> {
+		try {
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			const requestData: Record<string, any> = {
+				title: this.normalizeDocumentTitle(title)
+			};
+			if (this.settings.defaultFolderId) {
+				requestData.folder_token = this.settings.defaultFolderId;
+			}
+
+			const response = await requestUrl({
+				url: FEISHU_CONFIG.DOC_CREATE_URL,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestData)
+			});
+
+			const data = response.json || JSON.parse(response.text);
+			if (data.code !== 0) {
+				return {
+					success: false,
+					error: data.msg || `创建文档失败(${data.code})`
+				};
+			}
+
+			const documentToken = this.extractCreatedDocumentToken(data);
+			if (!documentToken) {
+				return {
+					success: false,
+					error: '创建文档成功，但未返回 document token'
+				};
+			}
+
+			return { success: true, documentToken };
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '创建文档失败'
+			};
+		}
+	}
+
+	private async getDocumentRootBlockId(documentId: string): Promise<string> {
+		const blocks = await this.getAllDocumentBlocks(documentId);
+		const rootBlock = blocks.find((block: any) => block && block.block_type === 1);
+		if (!rootBlock || !rootBlock.block_id) {
+			throw new Error('未找到文档根块');
+		}
+		return String(rootBlock.block_id);
+	}
+
+	private async convertMarkdownToDocumentPayload(content: string): Promise<{
+		success: boolean;
+		payload?: { children_id: string[]; descendants: any[] };
+		error?: string;
+	}> {
+		try {
+			const text = String(content || '');
+			if (!text.trim()) {
+				return {
+					success: true,
+					payload: {
+						children_id: [],
+						descendants: []
+					}
+				};
+			}
+
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/convert`,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					content_type: 'markdown',
+					raw_content: text,
+					use_simple: true
+				})
+			});
+
+			const data = response.json || JSON.parse(response.text);
+			if (data.code !== 0) {
+				return {
+					success: false,
+					error: data.msg || `Markdown 转文档块失败(${data.code})`
+				};
+			}
+
+			return {
+				success: true,
+				payload: buildDescendantPayloadFromConvertedData(data.data || {})
+			};
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : 'Markdown 转文档块失败'
+			};
+		}
+	}
+
+	private logDocxUploadCompatibilityWarnings(content: string): void {
+		for (const warning of collectDocxUploadCompatibilityWarnings(content)) {
+			Debug.warn(`[docx-compat] ${warning}`);
+		}
+	}
+
+	private async appendMarkdownToDocument(documentId: string, content: string): Promise<void> {
+		this.logDocxUploadCompatibilityWarnings(content);
+		const converted = await this.convertMarkdownToDocumentPayload(content);
+		if (!converted.success) {
+			throw new Error(converted.error || 'Markdown 转文档块失败');
+		}
+
+		const payload = converted.payload || { children_id: [], descendants: [] };
+		if (payload.children_id.length === 0 || payload.descendants.length === 0) {
+			Debug.log(`📝 No converted blocks produced for document ${documentId}`);
+			return;
+		}
+
+		const rootBlockId = await this.getDocumentRootBlockId(documentId);
+		const response = await requestUrl({
+			url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${rootBlockId}/descendant`,
+			method: 'POST',
+			headers: {
+				'Authorization': `Bearer ${this.settings.accessToken}`,
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify(payload)
+		});
+
+		const data = response.json || JSON.parse(response.text);
+		if (data.code !== 0) {
+			throw new Error(data.msg || '创建嵌套块失败');
+		}
+	}
+
+	private async finalizeDocumentAfterSync(documentToken: string, processResult: MarkdownProcessResult, statusNotice?: Notice): Promise<void> {
+		const localFiles = Array.isArray(processResult.localFiles) ? processResult.localFiles : [];
+		const calloutBlocks = Array.isArray(processResult.calloutBlocks) ? processResult.calloutBlocks : [];
+		const subDocuments = localFiles.filter((file) => file.isSubDocument);
+		const regularFiles = localFiles.filter((file) => !file.isSubDocument);
+
+		if (subDocuments.length > 0) {
+			if (statusNotice) {
+				statusNotice.setMessage(`📄 正在处理 ${subDocuments.length} 个子文档...`);
+			}
+			await this.processSubDocuments(documentToken, subDocuments, statusNotice);
+		}
+
+		if (regularFiles.length > 0 || calloutBlocks.length > 0) {
+			await this.processAllPlaceholders(
+				documentToken,
+				regularFiles,
+				calloutBlocks,
+				statusNotice
+			);
+		}
+
+		try {
+			await this.postProcessUploadedDocument(documentToken, processResult.content, statusNotice, processResult.inlineDocTokens || []);
+		} catch (postError) {
+			Debug.warn('⚠️ Post-upload processing failed (ignored):', postError);
+		}
+	}
+
+	private async applySharePermissionsIfEnabled(documentToken: string, statusNotice?: Notice): Promise<void> {
+		if (!this.settings.enableLinkShare || !documentToken) {
+			return;
+		}
+
+		try {
+			if (statusNotice) {
+				statusNotice.setMessage('🔗 正在设置文档分享权限...');
+			}
+			await this.setDocumentSharePermissions(documentToken, true);
+			Debug.log('✅ Document share permissions set successfully');
+		} catch (permissionError) {
+			Debug.warn('⚠️ Failed to set document share permissions:', permissionError);
+		}
+	}
+
+	private async tryShareToDriveViaBlockConversion(
+		title: string,
+		processResult: MarkdownProcessResult,
+		statusNotice?: Notice
+	): Promise<ShareResult | null> {
+		let documentToken: string | null = null;
+		try {
+			if (statusNotice) {
+				statusNotice.setMessage('🧱 正在创建飞书文档结构...');
+			}
+
+			const created = await this.createEmptyDocument(title);
+			if (!created.success || !created.documentToken) {
+				throw new Error(created.error || '创建空文档失败');
+			}
+			documentToken = created.documentToken;
+
+			await this.appendMarkdownToDocument(documentToken, processResult.content);
+			await this.finalizeDocumentAfterSync(documentToken, processResult, statusNotice);
+			await this.applySharePermissionsIfEnabled(documentToken, statusNotice);
+
+			return {
+				success: true,
+				title: this.normalizeDocumentTitle(title),
+				url: this.getDocumentUrl(documentToken)
+			};
+		} catch (error) {
+			Debug.warn('⚠️ Block conversion flow failed, falling back to import flow:', error);
+			if (documentToken) {
+				try {
+					await this.deleteDocument(documentToken);
+				} catch (cleanupError) {
+					Debug.warn('⚠️ Failed to cleanup block-conversion document:', cleanupError);
+				}
+			}
+			return null;
+		}
+	}
+
+	private async tryShareToWikiViaBlockConversion(
+		title: string,
+		processResult: MarkdownProcessResult,
+		statusNotice?: Notice
+	): Promise<ShareResult | null> {
+		let documentToken: string | null = null;
+		try {
+			if (statusNotice) {
+				statusNotice.setMessage('🧱 正在创建飞书文档结构...');
+			}
+
+			const created = await this.createEmptyDocument(title);
+			if (!created.success || !created.documentToken) {
+				throw new Error(created.error || '创建空文档失败');
+			}
+			documentToken = created.documentToken;
+
+			await this.appendMarkdownToDocument(documentToken, processResult.content);
+
+			if (statusNotice) {
+				statusNotice.setMessage('📚 正在移动到知识库...');
+			}
+
+			const moveResult = await this.moveDocToWiki(
+				this.settings.defaultWikiSpaceId,
+				documentToken,
+				'docx',
+				this.settings.defaultWikiNodeToken || undefined
+			);
+
+			if (!moveResult.success) {
+				Debug.warn('⚠️ Failed to move to wiki, falling back to cloud document');
+				await this.finalizeDocumentAfterSync(documentToken, processResult, statusNotice);
+				await this.applySharePermissionsIfEnabled(documentToken, statusNotice);
+				return {
+					success: true,
+					title: this.normalizeDocumentTitle(title),
+					url: this.getDocumentUrl(documentToken)
+				};
+			}
+
+			await this.finalizeDocumentAfterSync(documentToken, processResult, statusNotice);
+			await this.applySharePermissionsIfEnabled(documentToken, statusNotice);
+
+			return {
+				success: true,
+				title: this.normalizeDocumentTitle(title),
+				url: this.getDocumentUrl(documentToken)
+			};
+		} catch (error) {
+			Debug.warn('⚠️ Wiki block conversion flow failed, falling back to import flow:', error);
+			if (documentToken) {
+				try {
+					await this.deleteDocument(documentToken);
+				} catch (cleanupError) {
+					Debug.warn('⚠️ Failed to cleanup block-conversion wiki document:', cleanupError);
+				}
+			}
+			return null;
+		}
+	}
+
+	private async tryUpdateExistingDocumentViaBlockConversion(
+		feishuUrl: string,
+		title: string,
+		processResult: MarkdownProcessResult,
+		statusNotice?: Notice
+	): Promise<ShareResult | null> {
+		let documentId: string | null = null;
+		let originalContentBackup: any[] | null = null;
+		try {
+			documentId = this.extractDocumentIdFromUrl(feishuUrl);
+			if (!documentId) {
+				throw new Error('无法从URL中提取文档ID，请检查链接格式是否正确');
+			}
+
+			if (statusNotice) {
+				statusNotice.setMessage('💾 正在备份原始文档内容...');
+			}
+			originalContentBackup = await this.getAllDocumentBlocks(documentId);
+
+			if (statusNotice) {
+				statusNotice.setMessage('🧹 正在清空现有文档内容...');
+			}
+			const clearResult = await this.clearDocumentContent(documentId);
+			if (!clearResult.success) {
+				throw new Error(clearResult.error || '清空文档内容失败');
+			}
+
+			if (statusNotice) {
+				statusNotice.setMessage('🧱 正在写入新的文档结构...');
+			}
+			await this.appendMarkdownToDocument(documentId, processResult.content);
+			await this.finalizeDocumentAfterSync(documentId, processResult, statusNotice);
+
+			return {
+				success: true,
+				title: this.normalizeDocumentTitle(title),
+				url: this.getDocumentUrl(documentId)
+			};
+		} catch (error) {
+			Debug.warn('⚠️ Block conversion update flow failed, falling back to temp-doc copy flow:', error);
+			if (documentId && originalContentBackup && originalContentBackup.length > 0) {
+				try {
+					await this.rollbackDocumentContent(documentId, originalContentBackup);
+				} catch (rollbackError) {
+					Debug.error('❌ Rollback after block conversion update failure also failed:', rollbackError);
+				}
+			}
+			return null;
+		}
+	}
+
 	/**
 	 * 分享到云空间（原有逻辑）
 	 */
 	private async shareToDrive(title: string, processResult: MarkdownProcessResult, statusNotice?: Notice, isTemporary: boolean = false): Promise<ShareResult> {
 		try {
+			const blockResult = await this.tryShareToDriveViaBlockConversion(title, processResult, statusNotice);
+			if (blockResult) {
+				return blockResult;
+			}
 
 			// 更新状态：开始上传
 			if (statusNotice) {
@@ -1235,7 +1646,7 @@ export class FeishuApiService {
 
 						// 第六步：上传后语法处理（对齐 feishusync：高亮、文档链接等）
 						try {
-							await this.postProcessUploadedDocument(finalResult.documentToken, processResult.content, statusNotice);
+							await this.postProcessUploadedDocument(finalResult.documentToken, processResult.content, statusNotice, processResult.inlineDocTokens || []);
 						} catch (postError) {
 							Debug.warn('⚠️ Post-upload processing failed (ignored):', postError);
 						}
@@ -1302,6 +1713,11 @@ export class FeishuApiService {
 	 */
 	private async shareToWiki(title: string, processResult: MarkdownProcessResult, statusNotice?: Notice, isTemporary: boolean = false): Promise<ShareResult> {
 		try {
+			const blockResult = await this.tryShareToWikiViaBlockConversion(title, processResult, statusNotice);
+			if (blockResult) {
+				return blockResult;
+			}
+
 			// 更新状态：开始上传
 			if (statusNotice) {
 				statusNotice.setMessage('📤 正在上传文件到飞书云空间...');
@@ -1408,7 +1824,7 @@ export class FeishuApiService {
 
 			// 第六步：上传后语法处理（对齐 feishusync：高亮、文档链接等）
 			try {
-				await this.postProcessUploadedDocument(finalDocumentToken, processResult.content, statusNotice);
+				await this.postProcessUploadedDocument(finalDocumentToken, processResult.content, statusNotice, processResult.inlineDocTokens || []);
 			} catch (postError) {
 				Debug.warn('⚠️ Post-upload processing failed (ignored):', postError);
 			}
@@ -1463,6 +1879,19 @@ export class FeishuApiService {
 					setTimeout(() => statusNotice.hide(), 8000);
 				}
 				throw new Error(errorMsg);
+			}
+
+			const directProcessResult: MarkdownProcessResult = {
+				content,
+				localFiles: [],
+				calloutBlocks: [],
+				inlineDocTokens: [],
+				frontMatter: null,
+				extractedTitle: null
+			};
+			const blockResult = await this.tryShareToDriveViaBlockConversion(title, directProcessResult, statusNotice);
+			if (blockResult) {
+				return blockResult;
 			}
 
 			// 更新状态：开始上传
@@ -2965,6 +3394,8 @@ export class FeishuApiService {
 				textData = block.bullet; // 无序列表块
 			} else if (block.ordered && block.ordered.elements) {
 				textData = block.ordered; // 有序列表块
+			} else if (block.code && block.code.elements) {
+				textData = block.code;
 			}
 
 			if (!textData) {
@@ -3045,6 +3476,8 @@ export class FeishuApiService {
 			textData = block.bullet;
 		} else if (block.ordered && block.ordered.elements) {
 			textData = block.ordered;
+		} else if (block.code && block.code.elements) {
+			textData = block.code;
 		}
 
 		if (!textData) {
@@ -3527,6 +3960,82 @@ export class FeishuApiService {
 			Debug.error('Insert file block error:', error);
 			throw error;
 		}
+	}
+
+private async insertGeneratedDocBlock(documentId: string, placeholderBlock: PlaceholderBlock): Promise<string> {
+		try {
+			const fileInfo = placeholderBlock.fileInfo;
+			if (!fileInfo?.generatedType) {
+				throw new Error('生成型文档块信息缺失');
+			}
+
+			const generated = buildGeneratedDocBlock(fileInfo);
+			if (!generated) {
+				throw new Error(`暂不支持的生成型文档块: ${fileInfo.generatedType}`);
+			}
+
+			if (generated.kind === 'structure') {
+				return await this.insertGeneratedDocStructure(documentId, placeholderBlock, generated.structure);
+			}
+
+			const requestData = {
+				index: placeholderBlock.index,
+				children: [generated.block]
+			};
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/children`,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestData)
+			});
+
+			const data: FeishuBlockCreateResponse = response.json || JSON.parse(response.text);
+			if (data.code !== 0) {
+				throw new Error(data.msg || '插入生成型文档块失败');
+			}
+
+			return data.data.children[0]?.block_id || '';
+		} catch (error) {
+			Debug.error('Insert generated doc block error:', error);
+			throw error;
+		}
+	}
+
+	private async insertGeneratedDocStructure(
+		documentId: string,
+		placeholderBlock: PlaceholderBlock,
+		structure: GeneratedDocStructure
+	): Promise<string> {
+		const childrenId = Array.isArray(structure.children_id) ? structure.children_id : [];
+		const descendants = Array.isArray(structure.descendants) ? structure.descendants : [];
+		if (childrenId.length === 0 || descendants.length === 0) {
+			throw new Error('生成型文档结构为空');
+		}
+
+		const response = await requestUrl({
+			url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/descendant?document_revision_id=-1`,
+			method: 'POST',
+			headers: {
+				'Authorization': `Bearer ${this.settings.accessToken}`,
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({
+				index: placeholderBlock.index,
+				children_id: childrenId,
+				descendants
+			})
+		});
+
+		const data = response.json || JSON.parse(response.text);
+		if (data.code !== 0) {
+			throw new Error(data.msg || '插入生成型文档结构失败');
+		}
+
+		return childrenId[0] || '';
 	}
 
 	/**
@@ -4505,7 +5014,7 @@ export class FeishuApiService {
 
 			// 第三步：处理文件块
 			if (fileBlocks.length > 0) {
-				await this.processFileBlocks(documentId, fileBlocks, statusNotice);
+				await this.processFileBlocks(documentId, fileBlocks, localFiles, statusNotice);
 			}
 
 		} catch (error) {
@@ -4517,66 +5026,97 @@ export class FeishuApiService {
 	/**
 	 * 处理文件块（从原有逻辑提取）
 	 */
-	private async processFileBlocks(documentId: string, placeholderBlocks: PlaceholderBlock[], statusNotice?: Notice): Promise<void> {
-		// 按照原始文件顺序排序占位符块
-		const sortedPlaceholderBlocks = placeholderBlocks.filter(block => block.fileInfo);
+	private async processFileBlocks(
+		documentId: string,
+		placeholderBlocks: PlaceholderBlock[],
+		localFiles: LocalFileInfo[],
+		statusNotice?: Notice
+	): Promise<void> {
+		const sortedPlaceholderBlocks = this.sortPlaceholdersByOriginalOrder(
+			placeholderBlocks.filter(block => block.fileInfo),
+			localFiles
+		);
 
 		if (sortedPlaceholderBlocks.length === 0) {
 			return;
 		}
 
-		// 并行读取所有文件内容
-		if (statusNotice) {
-			statusNotice.setMessage(`📖 正在并行读取 ${sortedPlaceholderBlocks.length} 个文件...`);
+		const uploadBlocks = sortedPlaceholderBlocks.filter((block) => !block.fileInfo?.generatedType);
+		const fileContentByPlaceholder = new Map<string, ArrayBuffer>();
+
+		if (uploadBlocks.length > 0) {
+			if (statusNotice) {
+				statusNotice.setMessage(`📖 正在并行读取 ${uploadBlocks.length} 个文件...`);
+			}
+
+			const fileReadPromises = uploadBlocks.map(async (placeholderBlock) => {
+				try {
+					const fileContent = await this.readLocalFile(placeholderBlock.fileInfo!.originalPath);
+					return { placeholderBlock, fileContent, success: !!fileContent };
+				} catch (error) {
+					Debug.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo!.originalPath}`, error);
+					return { placeholderBlock, fileContent: null, success: false };
+				}
+			});
+
+			const fileReadResults = await Promise.all(fileReadPromises);
+			const validFiles = fileReadResults.filter((result) => result.success && result.fileContent);
+			for (const result of validFiles) {
+				fileContentByPlaceholder.set(result.placeholderBlock.placeholder, result.fileContent!);
+			}
+			Debug.log(`📁 Successfully read ${validFiles.length}/${uploadBlocks.length} files`);
 		}
 
-		const fileReadPromises = sortedPlaceholderBlocks.map(async (placeholderBlock) => {
-			try {
-				const fileContent = await this.readLocalFile(placeholderBlock.fileInfo!.originalPath);
-				return { placeholderBlock, fileContent, success: !!fileContent };
-			} catch (error) {
-				Debug.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo!.originalPath}`, error);
-				return { placeholderBlock, fileContent: null, success: false };
-			}
-		});
-
-		const fileReadResults = await Promise.all(fileReadPromises);
-		const validFiles = fileReadResults.filter(result => result.success);
-		Debug.log(`📁 Successfully read ${validFiles.length}/${sortedPlaceholderBlocks.length} files`);
-
-		// 串行处理文件上传（避免并发限制）
 		const processedBlocks: PlaceholderBlock[] = [];
-		for (let i = 0; i < validFiles.length; i++) {
-			const { placeholderBlock, fileContent } = validFiles[i];
-			const fileInfo = placeholderBlock.fileInfo!;
+		const insertedCountByParent = new Map<string, number>();
 
-			if (statusNotice) {
-				statusNotice.setMessage(`📤 正在上传文件 ${i + 1}/${validFiles.length}: ${fileInfo.fileName}...`);
+		for (let i = 0; i < sortedPlaceholderBlocks.length; i++) {
+			const placeholderBlock = sortedPlaceholderBlocks[i];
+			const fileInfo = placeholderBlock.fileInfo;
+
+			if (!fileInfo) {
+				continue;
 			}
 
-			try {
-				// 调整插入位置（考虑之前插入的文件块）
-				const adjustedPlaceholderBlock = {
-					...placeholderBlock,
-					index: placeholderBlock.index + i
-				};
-				Debug.log(`📍 Adjusted insert position for ${fileInfo.fileName}: ${placeholderBlock.index} -> ${adjustedPlaceholderBlock.index}`);
+			const alreadyInserted = insertedCountByParent.get(placeholderBlock.parentId) || 0;
+			const adjustedPlaceholderBlock = {
+				...placeholderBlock,
+				index: placeholderBlock.index + alreadyInserted
+			};
 
-				// 创建文件块并上传文件
-				const newBlockId = await this.insertFileBlock(documentId, adjustedPlaceholderBlock);
-				const fileToken = await this.uploadFileToDocument(documentId, newBlockId, fileInfo, fileContent!);
-				await this.setFileBlockContent(documentId, newBlockId, fileToken, fileInfo.isImage);
+			try {
+				if (fileInfo.generatedType) {
+					if (statusNotice) {
+						statusNotice.setMessage(`📘 正在插入文档块 ${i + 1}/${sortedPlaceholderBlocks.length}: ${fileInfo.generatedType}...`);
+					}
+					await this.insertGeneratedDocBlock(documentId, adjustedPlaceholderBlock);
+					Debug.log(`✅ Successfully processed generated block: ${fileInfo.generatedType}`);
+				} else {
+					if (statusNotice) {
+						statusNotice.setMessage(`📤 正在上传文件 ${i + 1}/${sortedPlaceholderBlocks.length}: ${fileInfo.fileName}...`);
+					}
+
+					const fileContent = fileContentByPlaceholder.get(placeholderBlock.placeholder);
+					if (!fileContent) {
+						Debug.warn(`⚠️ Skip file upload because content is missing: ${fileInfo.fileName}`);
+						continue;
+					}
+
+					Debug.log(`📍 Adjusted insert position for ${fileInfo.fileName}: ${placeholderBlock.index} -> ${adjustedPlaceholderBlock.index}`);
+					const newBlockId = await this.insertFileBlock(documentId, adjustedPlaceholderBlock);
+					const fileToken = await this.uploadFileToDocument(documentId, newBlockId, fileInfo, fileContent);
+					await this.setFileBlockContent(documentId, newBlockId, fileToken, fileInfo.isImage);
+					Debug.log(`✅ Successfully processed file: ${fileInfo.fileName}`);
+				}
 
 				processedBlocks.push(placeholderBlock);
-				Debug.log(`✅ Successfully processed file: ${fileInfo.fileName}`);
-
+				insertedCountByParent.set(placeholderBlock.parentId, alreadyInserted + 1);
 			} catch (fileError) {
-				Debug.error(`❌ Failed to process file ${fileInfo.fileName}:`, fileError);
-				// 继续处理其他文件，不中断整个流程
+				const displayName = fileInfo.generatedType || fileInfo.fileName;
+				Debug.error(`❌ Failed to process file-like block ${displayName}:`, fileError);
 			}
 		}
 
-		// 批量替换占位符文本
 		if (processedBlocks.length > 0) {
 			if (statusNotice) {
 				statusNotice.setMessage(`🔄 正在清理 ${processedBlocks.length} 个占位符...`);
@@ -4594,107 +5134,7 @@ export class FeishuApiService {
 			return;
 		}
 
-		try {
-			if (statusNotice) {
-				statusNotice.setMessage(`🔍 正在查找占位符 (${localFiles.length} 个文件)...`);
-			}
-
-			// 第一步：查找占位符文本块
-			const placeholderBlocks = await this.findPlaceholderBlocks(documentId, localFiles);
-
-			if (placeholderBlocks.length === 0) {
-				Debug.warn('⚠️ No placeholder blocks found in document');
-				return;
-			}
-
-			Debug.log(`🎯 Found ${placeholderBlocks.length} placeholder blocks to process`);
-
-			// 按照原始文件顺序排序占位符块
-			const sortedPlaceholderBlocks = this.sortPlaceholdersByOriginalOrder(placeholderBlocks, localFiles);
-			Debug.log(`📋 Sorted placeholder blocks by original order`);
-
-			// 第二步：并行读取所有文件内容（优化：并发读取）
-			if (statusNotice) {
-				statusNotice.setMessage(`📖 正在并行读取 ${sortedPlaceholderBlocks.length} 个文件...`);
-			}
-
-			const fileReadPromises = sortedPlaceholderBlocks.map(async (placeholderBlock) => {
-				try {
-					if (!placeholderBlock.fileInfo) {
-						throw new Error('File info is missing');
-					}
-					const fileContent = await this.readLocalFile(placeholderBlock.fileInfo.originalPath);
-					return { placeholderBlock, fileContent, success: !!fileContent };
-				} catch (error) {
-					Debug.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo?.originalPath || 'unknown'}`, error);
-					return { placeholderBlock, fileContent: null, success: false };
-				}
-			});
-
-			const fileReadResults = await Promise.all(fileReadPromises);
-			const validFiles = fileReadResults.filter(result => result.success);
-			Debug.log(`📁 Successfully read ${validFiles.length}/${sortedPlaceholderBlocks.length} files`);
-
-			// 第三步：按顺序处理文件上传（必须串行，因为API限制）
-			const processedBlocks: PlaceholderBlock[] = [];
-			for (let i = 0; i < validFiles.length; i++) {
-				const { placeholderBlock, fileContent } = validFiles[i];
-				const fileInfo = placeholderBlock.fileInfo;
-
-				if (!fileInfo) {
-					Debug.warn(`⚠️ Skipping file processing: fileInfo is missing`);
-					continue;
-				}
-
-				if (statusNotice) {
-					statusNotice.setMessage(`📤 正在上传文件 ${i + 1}/${validFiles.length}: ${fileInfo.fileName}...`);
-				}
-
-				try {
-					// 调整插入位置（考虑之前插入的文件块）
-					const adjustedPlaceholderBlock = {
-						...placeholderBlock,
-						index: placeholderBlock.index + i
-					};
-					Debug.log(`📍 Adjusted insert position for ${fileInfo.fileName}: ${placeholderBlock.index} -> ${adjustedPlaceholderBlock.index}`);
-
-					// 创建文件块并上传文件
-					const newBlockId = await this.insertFileBlock(documentId, adjustedPlaceholderBlock);
-					const fileToken = await this.uploadFileToDocument(documentId, newBlockId, fileInfo, fileContent!);
-					await this.setFileBlockContent(documentId, newBlockId, fileToken, fileInfo.isImage);
-
-					processedBlocks.push(placeholderBlock);
-					Debug.log(`✅ Successfully processed file: ${fileInfo.fileName}`);
-
-				} catch (fileError) {
-					Debug.error(`❌ Failed to process file ${fileInfo.fileName}:`, fileError);
-					// 继续处理其他文件，不中断整个流程
-				}
-			}
-
-			// 第四步：批量替换占位符文本（优化：批量操作）
-			if (processedBlocks.length > 0) {
-				if (statusNotice) {
-					statusNotice.setMessage(`🔄 正在检查并清理 ${processedBlocks.length} 个占位符...`);
-				}
-
-				// 重新查找仍然存在的占位符（因为子文档处理可能已经清理了一些）
-				const remainingPlaceholders = await this.findRemainingPlaceholders(documentId, processedBlocks);
-
-				if (remainingPlaceholders.length > 0) {
-					Debug.log(`🔄 Found ${remainingPlaceholders.length} remaining placeholders to clean up`);
-					await this.batchReplacePlaceholderText(documentId, remainingPlaceholders);
-				} else {
-					Debug.log(`✅ All placeholders have already been cleaned up`);
-				}
-			}
-
-			Debug.log(`🎉 File upload processing completed: ${processedBlocks.length} files processed`);
-
-		} catch (error) {
-			Debug.error('Process file uploads error:', error);
-			throw error;
-		}
+		await this.processAllPlaceholders(documentId, localFiles, [], statusNotice);
 	}
 
 	/**
@@ -5156,6 +5596,24 @@ export class FeishuApiService {
 		try {
 			Debug.log(`📤 Uploading sub-document: ${title}`);
 
+			const directProcessResult: MarkdownProcessResult = {
+				content,
+				localFiles: [],
+				calloutBlocks: [],
+				frontMatter: null,
+				extractedTitle: null
+			};
+			const blockResult = await this.tryShareToDriveViaBlockConversion(title, directProcessResult, statusNotice);
+			if (blockResult?.success && blockResult.url) {
+				const documentToken = this.extractDocumentIdFromUrl(blockResult.url);
+				return {
+					success: true,
+					documentToken: documentToken || undefined,
+					url: blockResult.url,
+					title: blockResult.title || this.normalizeDocumentTitle(title)
+				};
+			}
+
 			// 使用现有的上传方法
 			const uploadResult = await this.uploadMarkdownFile(title, content);
 			if (!uploadResult.success) {
@@ -5577,6 +6035,133 @@ export class FeishuApiService {
 			Debug.error(`❌ Error replacing placeholder with link in block ${blockId}:`, error);
 			throw error;
 		}
+	}
+
+	private async findPlaceholderBlocksForInlineTokens(documentId: string, tokens: InlineDocTokenInfo[]): Promise<PlaceholderBlock[]> {
+		const pseudoFiles: LocalFileInfo[] = tokens.map((token) => ({
+			originalPath: `inline://${token.kind}/${token.placeholder}`,
+			fileName: token.placeholder,
+			placeholder: token.placeholder,
+			isImage: false
+		}));
+		return this.findPlaceholderBlocks(documentId, pseudoFiles);
+	}
+
+	private async replacePlaceholderWithInlineDocToken(
+		documentId: string,
+		blockId: string,
+		placeholder: string,
+		token: InlineDocTokenInfo
+	): Promise<void> {
+		const blockInfo = await this.getBlockContent(documentId, blockId);
+		if (!blockInfo) {
+			return;
+		}
+
+		const newElements = this.buildTextElementsWithInlineDocToken(blockInfo.elements, placeholder, token);
+		if (newElements.length === 0) {
+			return;
+		}
+
+		const response = await requestUrl({
+			url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${blockId}`,
+			method: 'PATCH',
+			headers: {
+				'Authorization': `Bearer ${this.settings.accessToken}`,
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({
+				update_text_elements: {
+					elements: newElements
+				}
+			})
+		});
+
+		const data = response.json || JSON.parse(response.text);
+		if (data.code !== 0) {
+			throw new Error(data.msg || '替换富文本占位失败');
+		}
+	}
+
+	private buildTextElementsWithInlineDocToken(elements: any[], placeholder: string, token: InlineDocTokenInfo): any[] {
+		const next: any[] = [];
+		const placeholderVariants = [
+			placeholder,
+			placeholder.replace(/^__/, '').replace(/__$/, ''),
+			`!${placeholder.replace(/^__/, '').replace(/__$/, '')}!`
+		];
+
+		for (const element of elements || []) {
+			if (!element?.text_run || typeof element.text_run.content !== 'string') {
+				next.push(element);
+				continue;
+			}
+
+			let text = String(element.text_run.content);
+			const style = element.text_run.text_element_style || {};
+
+			let matched = false;
+			for (const variant of placeholderVariants) {
+				const index = text.indexOf(variant);
+				if (index === -1) {
+					continue;
+				}
+
+				matched = true;
+				const before = text.slice(0, index);
+				const after = text.slice(index + variant.length);
+
+				if (before) {
+					next.push({
+						text_run: {
+							content: before,
+							text_element_style: { ...style }
+						}
+					});
+				}
+
+				next.push(this.inlineDocTokenToElement(token, style));
+
+				if (after) {
+					next.push({
+						text_run: {
+							content: after,
+							text_element_style: { ...style }
+						}
+					});
+				}
+				break;
+			}
+
+			if (!matched) {
+				next.push(element);
+			}
+		}
+
+		return next;
+	}
+
+	private inlineDocTokenToElement(token: InlineDocTokenInfo, baseStyle: Record<string, any>): any {
+		const mergedStyle = {
+			...baseStyle,
+			...(token.style || {})
+		};
+
+		if (token.kind === 'equation') {
+			return {
+				equation: {
+					content: token.content,
+					text_element_style: mergedStyle
+				}
+			};
+		}
+
+		return {
+			text_run: {
+				content: token.content,
+				text_element_style: mergedStyle
+			}
+		};
 	}
 
 
@@ -7001,6 +7586,16 @@ export class FeishuApiService {
 		let documentId: string | null = null;
 
 		try {
+			const blockResult = await this.tryUpdateExistingDocumentViaBlockConversion(
+				feishuUrl,
+				title,
+				processResult,
+				statusNotice
+			);
+			if (blockResult) {
+				return blockResult;
+			}
+
 			Debug.log(`🔄 Starting document update process for: ${feishuUrl}`);
 
 			if (statusNotice) {
@@ -7121,7 +7716,7 @@ export class FeishuApiService {
 
 			// 9. 上传后语法处理（对齐 feishusync：高亮、文档链接等）
 			try {
-				await this.postProcessUploadedDocument(documentId, processResult.content, statusNotice);
+				await this.postProcessUploadedDocument(documentId, processResult.content, statusNotice, processResult.inlineDocTokens || []);
 			} catch (postError) {
 				Debug.warn('⚠️ Post-update processing failed (ignored):', postError);
 			}
@@ -7476,7 +8071,54 @@ export class FeishuApiService {
 			.trim();
 	}
 
-	async getBitableTableFields(appToken: string, tableId: string): Promise<{ success: boolean; fields?: Array<{ name: string; type: number; property?: any }>; error?: string }> {
+	async getBitableTables(appToken: string): Promise<{ success: boolean; tables?: BitableTableOption[]; error?: string }> {
+		try {
+			const normalizedAppToken = this.normalizeBitableId(appToken);
+			if (!normalizedAppToken) {
+				return { success: false, error: '缺少 appToken' };
+			}
+
+			const tables: BitableTableOption[] = [];
+			let pageToken = '';
+			for (let attempt = 0; attempt < 10; attempt++) {
+				const query = pageToken ? `?page_token=${encodeURIComponent(pageToken)}` : '';
+				const url = `${FEISHU_CONFIG.BASE_URL}/bitable/v1/apps/${normalizedAppToken}/tables${query}`;
+				const data = await this.bitableRequest('GET', url);
+				if (data.code !== 0) {
+					return { success: false, error: data.msg || `获取数据表失败(${data.code})` };
+				}
+				const items = Array.isArray(data.data?.items) ? data.data.items : [];
+				tables.push(...items
+					.map((item: any) => ({
+						tableId: item?.table_id ? String(item.table_id) : '',
+						name: item?.name ? String(item.name) : '',
+						revision: typeof item?.revision === 'number' ? item.revision : undefined
+					}))
+					.filter((item: BitableTableOption) => !!item.tableId));
+				const hasMore = !!data.data?.has_more;
+				pageToken = data.data?.page_token ? String(data.data.page_token) : '';
+				if (!hasMore || !pageToken) {
+					break;
+				}
+			}
+
+			return {
+				success: true,
+				tables: tables.sort((a, b) => {
+					const nameCompare = a.name.localeCompare(b.name, 'zh-Hans-CN');
+					if (nameCompare !== 0) {
+						return nameCompare;
+					}
+					return a.tableId.localeCompare(b.tableId);
+				})
+			};
+		} catch (e) {
+			const errMsg = (e as Error).message || String(e);
+			return { success: false, error: errMsg };
+		}
+	}
+
+	async getBitableTableFields(appToken: string, tableId: string): Promise<{ success: boolean; fields?: BitableFieldMeta[]; error?: string }> {
 		try {
 			const normalizedAppToken = this.normalizeBitableId(appToken);
 			const normalizedTableId = this.normalizeBitableId(tableId);

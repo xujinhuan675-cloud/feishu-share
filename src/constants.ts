@@ -12,7 +12,7 @@ export const FEISHU_CONFIG = {
 	REFRESH_TOKEN_URL: 'https://open.feishu.cn/open-apis/authen/v2/oauth/token',
 	
 	// API 权限范围（包含offline_access以支持refresh_token）
-	SCOPES: 'contact:user.base:readonly docx:document drive:drive wiki:wiki bitable:app base:field:read offline_access',
+	SCOPES: 'contact:user.base:readonly docx:document docx:document.block:convert drive:drive wiki:wiki bitable:app base:field:read offline_access',
 	
 	// 文件上传相关（使用素材上传API，导入后自动删除源文件）
 	UPLOAD_URL: 'https://open.feishu.cn/open-apis/drive/v1/medias/upload_all',
@@ -73,12 +73,22 @@ export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	syncTarget: 'docx',
 	batchSyncScope: 'current_file',
 	batchSyncCustomFolder: '',
+	enableScheduledSync: false,
+	scheduledSyncIntervalMinutes: 30,
+	scheduledSyncScope: 'tracked_files',
+	scheduledSyncCustomFolder: '',
+	scheduledSyncRunOnStartup: false,
+	scheduledSyncReport: {
+		status: 'idle',
+		failureStreak: 0
+	},
 	uploadHistory: [],
 	syncStates: [],
 
 	// 多维表格（bitable）同步配置
 	bitableAppToken: '',
 	bitableTableId: '',
+	bitableTableOptionsCache: [],
 	bitableFieldMapping: '',
 	bitableFieldNamesCache: [],
 	bitableExcludedFields: '',

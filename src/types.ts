@@ -26,9 +26,42 @@ export type SyncTarget = 'docx' | 'bitable' | 'both';
 
 export type BatchSyncScope = 'current_file' | 'current_folder' | 'custom_folder' | 'vault_all';
 
+export type ScheduledSyncScope = BatchSyncScope | 'tracked_files';
+
 export type SyncDirection = 'obsidian-to-feishu' | 'feishu-to-obsidian' | 'bitable';
 
 export type SyncStatus = 'synced' | 'conflict' | 'error';
+
+export interface BitableTableOption {
+	tableId: string;
+	name: string;
+	revision?: number;
+}
+
+export interface BitableFieldMeta {
+	name: string;
+	type: number;
+	property?: any;
+	uiType?: string;
+}
+
+export type GeneratedLocalFileType = 'mermaid' | 'whiteboard' | 'table';
+export type InlineDocTokenKind = 'text' | 'equation';
+
+export interface ScheduledSyncReport {
+	lastRunAt?: number;
+	lastDurationMs?: number;
+	lastTrigger?: 'startup' | 'interval' | 'manual';
+	status?: 'idle' | 'running' | 'success' | 'partial' | 'failed' | 'skipped' | 'paused';
+	totalFiles?: number;
+	successCount?: number;
+	failedCount?: number;
+	skippedCount?: number;
+	message?: string;
+	lastError?: string;
+	failureStreak?: number;
+	pauseUntil?: number;
+}
 
 /**
  * 知识库空间信息
@@ -104,6 +137,12 @@ export interface FeishuSettings {
 	syncTarget?: SyncTarget;
 	batchSyncScope?: BatchSyncScope;
 	batchSyncCustomFolder?: string;
+	enableScheduledSync?: boolean;
+	scheduledSyncIntervalMinutes?: number;
+	scheduledSyncScope?: ScheduledSyncScope;
+	scheduledSyncCustomFolder?: string;
+	scheduledSyncRunOnStartup?: boolean;
+	scheduledSyncReport?: ScheduledSyncReport;
 
 	// 上传历史映射（本地文件 <-> 飞书文档）
 	uploadHistory?: UploadHistoryItem[];
@@ -112,6 +151,7 @@ export interface FeishuSettings {
 	// 多维表格（bitable）同步配置
 	bitableAppToken?: string;
 	bitableTableId?: string;
+	bitableTableOptionsCache?: BitableTableOption[];
 	bitableFieldMapping?: string;
 	bitableFieldNamesCache?: string[];
 	bitableExcludedFields?: string;
@@ -283,6 +323,13 @@ export interface LocalFileInfo {
 	fileName: string;
 	placeholder: string;
 	isImage: boolean;
+	mimeType?: string;
+	inlineData?: ArrayBuffer;
+	generatedType?: GeneratedLocalFileType;
+	generatedSource?: string;
+	generatedFenceInfo?: string;
+	generatedIndent?: string;
+	generatedMeta?: Record<string, any>;
 	isSubDocument?: boolean;  // 新增：标识是否为子文档（双链引用的md文件）
 	isCallout?: boolean;      // 新增：标识是否为 Callout 块
 	altText?: string;
@@ -303,6 +350,22 @@ export interface CalloutInfo {
 	emojiId?: string;         // 表情图标
 }
 
+export interface InlineDocTokenInfo {
+	placeholder: string;
+	kind: InlineDocTokenKind;
+	content: string;
+	displayMode?: 'inline' | 'block';
+	style?: {
+		bold?: boolean;
+		italic?: boolean;
+		underline?: boolean;
+		strikethrough?: boolean;
+		inline_code?: boolean;
+		text_color?: number;
+		background_color?: number;
+	};
+}
+
 /**
  * Front Matter 解析结果
  */
@@ -318,6 +381,7 @@ export interface MarkdownProcessResult {
 	content: string;
 	localFiles: LocalFileInfo[];
 	calloutBlocks?: CalloutInfo[];  // 新增：Callout 块信息
+	inlineDocTokens?: InlineDocTokenInfo[];
 	frontMatter: FrontMatterData | null;
 	extractedTitle: string | null;
 }

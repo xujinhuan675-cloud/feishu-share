@@ -1,7 +1,9 @@
 import { App, TFile, normalizePath } from 'obsidian';
-import { LocalFileInfo, MarkdownProcessResult, ProcessContext, FrontMatterData, CalloutInfo } from './types';
+import { LocalFileInfo, MarkdownProcessResult, ProcessContext, FrontMatterData, CalloutInfo, InlineDocTokenInfo } from './types';
 import { Debug } from './debug';
 import { CALLOUT_TYPE_MAPPING } from './constants';
+import { shouldPreserveFeishuSpecialLink } from './docx-convert';
+import { extractGeneratedDocBlocks } from './feishu-doc-blocks';
 
 /**
  * Markdown 内容处理器
@@ -10,6 +12,7 @@ import { CALLOUT_TYPE_MAPPING } from './constants';
 export class MarkdownProcessor {
 	private localFiles: LocalFileInfo[] = [];
 	private calloutBlocks: CalloutInfo[] = [];
+	private inlineDocTokens: InlineDocTokenInfo[] = [];
 	private app: App;
 
 	constructor(app: App) {
@@ -165,7 +168,12 @@ export class MarkdownProcessor {
 				return m;
 			});
 
-			text = text.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, _label, url) => url);
+			text = text.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, label, url) => {
+				if (shouldPreserveFeishuSpecialLink(String(label || ''), String(url || ''))) {
+					return match;
+				}
+				return url;
+			});
 			return text;
 		} catch {
 			return content;
@@ -397,6 +405,78 @@ export class MarkdownProcessor {
 		});
 	}
 
+	private processGeneratedDocBlocks(content: string): string {
+		const extracted = extractGeneratedDocBlocks(content, () => this.generatePlaceholder());
+		if (extracted.localFiles.length > 0) {
+			this.localFiles.push(...extracted.localFiles);
+		}
+		return extracted.content;
+	}
+
+	private processInlineDocTokens(content: string): string {
+		let next = String(content || '');
+
+		next = next.replace(/\$\$([\s\S]+?)\$\$/g, (_match, formula) => {
+			const placeholder = this.generatePlaceholder();
+			this.inlineDocTokens.push({
+				placeholder,
+				kind: 'equation',
+				content: String(formula || '').trim(),
+				displayMode: 'block'
+			});
+			return placeholder;
+		});
+
+		next = next.replace(/(?<!\$)\$([^\n$]+?)\$(?!\$)/g, (_match, formula) => {
+			const placeholder = this.generatePlaceholder();
+			this.inlineDocTokens.push({
+				placeholder,
+				kind: 'equation',
+				content: String(formula || '').trim(),
+				displayMode: 'inline'
+			});
+			return placeholder;
+		});
+
+		next = next.replace(/<u>([\s\S]*?)<\/u>/gi, (_match, inner) => {
+			const placeholder = this.generatePlaceholder();
+			this.inlineDocTokens.push({
+				placeholder,
+				kind: 'text',
+				content: String(inner || ''),
+				style: {
+					underline: true
+				}
+			});
+			return placeholder;
+		});
+
+		const colorPatterns: Array<{ regex: RegExp; style: InlineDocTokenInfo['style'] }> = [
+			{ regex: /<span\s+style=["'][^"']*color\s*:\s*gray[^"']*["']\s*>([\s\S]*?)<\/span>/gi, style: { text_color: 1 } },
+			{ regex: /<span\s+style=["'][^"']*color\s*:\s*brown[^"']*["']\s*>([\s\S]*?)<\/span>/gi, style: { text_color: 2 } },
+			{ regex: /<span\s+style=["'][^"']*color\s*:\s*orange[^"']*["']\s*>([\s\S]*?)<\/span>/gi, style: { text_color: 3 } },
+			{ regex: /<span\s+style=["'][^"']*color\s*:\s*yellow[^"']*["']\s*>([\s\S]*?)<\/span>/gi, style: { text_color: 4 } },
+			{ regex: /<span\s+style=["'][^"']*color\s*:\s*green[^"']*["']\s*>([\s\S]*?)<\/span>/gi, style: { text_color: 5 } },
+			{ regex: /<span\s+style=["'][^"']*color\s*:\s*blue[^"']*["']\s*>([\s\S]*?)<\/span>/gi, style: { text_color: 6 } },
+			{ regex: /<span\s+style=["'][^"']*color\s*:\s*purple[^"']*["']\s*>([\s\S]*?)<\/span>/gi, style: { text_color: 7 } }
+		];
+
+		for (const { regex, style } of colorPatterns) {
+			next = next.replace(regex, (_match, inner) => {
+				const placeholder = this.generatePlaceholder();
+				this.inlineDocTokens.push({
+					placeholder,
+					kind: 'text',
+					content: String(inner || ''),
+					style: { ...style }
+				});
+				return placeholder;
+			});
+		}
+
+		return next;
+	}
+
 
 
 	/**
@@ -574,6 +654,7 @@ export class MarkdownProcessor {
 		// 重置本地文件列表和 Callout 列表
 		this.localFiles = [];
 		this.calloutBlocks = [];
+		this.inlineDocTokens = [];
 
 		// 处理 Front Matter
 		const { content: processedContent, frontMatter } = this.processFrontMatter(content, frontMatterHandling);
@@ -598,6 +679,7 @@ export class MarkdownProcessor {
 			content: finalContent,
 			localFiles: [...this.localFiles],
 			calloutBlocks: [...this.calloutBlocks],
+			inlineDocTokens: [...this.inlineDocTokens],
 			frontMatter: frontMatter,
 			extractedTitle: frontMatter?.title || null
 		};
@@ -771,22 +853,30 @@ export class MarkdownProcessor {
 				currentDepth: context.currentDepth + 1
 			};
 
-			// 重置本地文件列表（为子文档处理）
+			// 子文档使用独立收集器，避免污染主文档的占位信息
 			const originalFiles = [...this.localFiles];
+			const originalCallouts = [...this.calloutBlocks];
+			const originalInlineDocTokens = [...this.inlineDocTokens];
 			this.localFiles = [];
+			this.calloutBlocks = [];
+			this.inlineDocTokens = [];
 
 			// 处理子文档内容
 			const finalContent = this.processCompleteWithContext(processedContent, subContext);
 
-			// 获取子文档的文件列表
+			// 获取子文档自己的文件和行内 token
 			const subDocumentFiles = [...this.localFiles];
+			const subDocumentInlineDocTokens = [...this.inlineDocTokens];
 
-			// 恢复原始文件列表
+			// 恢复主文档的收集器
 			this.localFiles = originalFiles;
+			this.calloutBlocks = originalCallouts;
+			this.inlineDocTokens = originalInlineDocTokens;
 
 			return {
 				content: finalContent,
 				localFiles: subDocumentFiles,
+				inlineDocTokens: subDocumentInlineDocTokens,
 				frontMatter: frontMatter,
 				extractedTitle: extractedTitle
 			};
@@ -795,6 +885,7 @@ export class MarkdownProcessor {
 			return {
 				content: `❌ 无法读取子文档: ${file.basename}`,
 				localFiles: [],
+				inlineDocTokens: [],
 				frontMatter: null,
 				extractedTitle: null
 			};
@@ -808,6 +899,8 @@ export class MarkdownProcessor {
 		let processedContent = content;
 
 		// 按顺序处理各种语法
+		processedContent = this.processGeneratedDocBlocks(processedContent);
+		processedContent = this.processInlineDocTokens(processedContent);
 		processedContent = this.processCodeBlocks(processedContent, context); // 先做代码块过滤
 		processedContent = this.processCallouts(processedContent); // 先处理 Callout，因为它们是块级元素
 		processedContent = this.processWikiLinks(processedContent, context);
