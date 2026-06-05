@@ -45,6 +45,32 @@ export interface BitableFieldMeta {
 	uiType?: string;
 }
 
+export type BitableFieldMappingValue = string | string[];
+
+export interface BitableSyncProfile {
+	id: string;
+	name: string;
+	enabled?: boolean;
+	appToken: string;
+	tableId: string;
+	viewId?: string;
+	targetDir: string;
+	fileNameTemplate?: string;
+	fieldMapping?: Record<string, BitableFieldMappingValue>;
+	statusMapping?: Record<string, string>;
+	reverseStatusMapping?: Record<string, string>;
+	frontmatterFields?: string[];
+	bodyFields?: string[];
+	primaryBodyField?: string;
+	bodyTemplate?: string;
+	syncUncontrolledBody?: boolean;
+	fieldNamesCache?: string[];
+	tableOptionsCache?: BitableTableOption[];
+	scheduledSyncEnabled?: boolean;
+	scheduledSyncIntervalMinutes?: number;
+	scheduledSyncRunOnStartup?: boolean;
+}
+
 export type GeneratedLocalFileType = 'mermaid' | 'whiteboard' | 'table' | 'todo' | 'list';
 export type InlineDocTokenKind = 'text' | 'equation' | 'todo';
 
@@ -155,6 +181,10 @@ export interface FeishuSettings {
 	bitableFieldMapping?: string;
 	bitableFieldNamesCache?: string[];
 	bitableExcludedFields?: string;
+	bitableProfiles?: BitableSyncProfile[];
+	activeBitableProfileId?: string;
+	enableScheduledBitableProfiles?: boolean;
+	scheduledBitableProfileIds?: string[];
 }
 
 export interface UploadHistoryItem {
@@ -163,6 +193,10 @@ export interface UploadHistoryItem {
 	docToken?: string;
 	url?: string;
 	bitableRecordId?: string;
+	bitableProfileId?: string;
+	bitableAppToken?: string;
+	bitableTableId?: string;
+	bitableViewId?: string;
 	updatedAt?: number;
 	localDeletedAt?: number;
 }
@@ -173,7 +207,13 @@ export interface SyncStateItem {
 	docToken?: string;
 	url?: string;
 	bitableRecordId?: string;
+	bitableProfileId?: string;
+	bitableAppToken?: string;
+	bitableTableId?: string;
+	bitableViewId?: string;
 	localHash?: string;
+	docLocalHash?: string;
+	bitableLocalHash?: string;
 	lastDirection?: SyncDirection;
 	status?: SyncStatus;
 	lastSyncedAt?: number;

@@ -2,8 +2,8 @@
   "appId": "cli_a8635493696a101c",
   "appSecret": "ORbsTMviGncJp6YcCKhNxcttPfzZprdA",
   "callbackUrl": "https://md2feishu.xinqi.life/oauth-callback",
-  "accessToken": "eyJhbGciOiJFUzI1NiIsImZlYXR1cmVfY29kZSI6IkZlYXR1cmVPQXV0aEpXVFNpZ25fQ04iLCJraWQiOiI3NjQ2NTgxNDU1OTMzNDU5NjYwIiwidHlwIjoiSldUIn0.eyJqdGkiOiI3NjQ3NzM1ODQyMjUyOTY2ODY0IiwiaWF0IjoxNzgwNjI3MjU4LCJleHAiOjE3ODA2MzQ0NTgsInZlciI6InYxIiwidHlwIjoiYWNjZXNzX3Rva2VuIiwiYWNjZXNzX21vZGUiOiJkZWxlZ2F0ZWQiLCJjbGllbnRfaWQiOiJjbGlfYTg2MzU0OTM2OTZhMTAxYyIsInNjb3BlIjoiYXV0aDp1c2VyLmlkOnJlYWQgYmFzZTpmaWVsZDpyZWFkIGJpdGFibGU6YXBwIGNvbnRhY3Q6dXNlci5iYXNlOnJlYWRvbmx5IGRvY3g6ZG9jdW1lbnQgZHJpdmU6ZHJpdmUgb2ZmbGluZV9hY2Nlc3Mgd2lraTp3aWtpIiwiYXV0aF9pZCI6Ijc2NDc0MTMzNDU1OTg5ODM0MDgiLCJhdXRoX3RpbWUiOjE3ODA1NTIxNzEsImF1dGhfZXhwIjoxODEyMDg4MTcxLCJ1bml0IjoiZXVfbmMiLCJ0ZW5hbnRfdW5pdCI6ImV1X25jIiwib3BhcXVlIjp0cnVlLCJlbmMiOiJBaVFrQVFFQ0FNSURBQUVCQXdBQ0FRMEFBd3NMQUFBQUF3QUFBQWRHWldGMGRYSmxBQUFBRUc5aGRYUm9YMjl3WVhGMVpWOXFkM1FBQUFBSVZHVnVZVzUwU1dRQUFBQUJNQUFBQUFSVWFXMWxBQUFBQ2pFM09EQXlOekl3TURBUEFBUU1BQUFBQVFvQUFXTEZJbG12Z0FBaUN3QUNBQUFBRElsQUxSSUxUbytJQUxLN293c0FBd0FBQUREUzhjeGNXNHZEdTNRbmlxb2NXazhZWXIwaThvSnZLRmFkcDJWRGJYaFE1clJnZnJSNjBzd3JjT0FEYjBSZFdjc0FDd0FGQUFBQUJXVjFYMjVqQU5JUzR0SU9FUlFsRnM0V0ZsMS9TQzBHS0JsQ2w2YVdQNlR6TlhKOVFLbWk4S2FXQkNRUXA3V2hSRGNRcEc2M3lsRmduc1pmSk1XRElPcXY5RHFydXNaN0drZUs4VFFXa3gvNEY1aEw1WVh3QUxWK25EWlc5UURIRDJDYjMrUG9oOGFKMzdUQnZyRkJvdEw1Tkt2K3VMSmJ4NmRxMlBFdzZXSFQ4Q3ZCOHJyU3dubFZtQ2h0bnc2VnFpak8vUDdud1dLRGh3PT0iLCJlbmNfdmVyIjoidjEiLCJzZXNzaW9uX2V4dHJhIjp7ImlzX2Fub255bW91cyI6ZmFsc2UsIm5lZWRfYXV0aCI6ZmFsc2UsInZhbGlkX2Zvcl9hcHBfaWQiOmZhbHNlLCJkcG9wX3RodW1icHJpbnQiOiIiLCJ0ZW5hbnRfY3JlYXRlX3NvdXJjZSI6Mn19.VizMv0v_FY1O0hSB3H4tE55e7ijrg-EN8kN3Jiozv4ui6PMAdEwDXDFD6iEOhMiDA-3I_aZ5lfI7NXTFG7DlDw",
-  "refreshToken": "eyJhbGciOiJFUzI1NiIsImZlYXR1cmVfY29kZSI6IkZlYXR1cmVPQXV0aEpXVFNpZ25fQ04iLCJraWQiOiI3NjQ2NTgxNDU1OTMzNDU5NjYwIiwidHlwIjoiSldUIn0.eyJqdGkiOiI3NjQ3NzM1ODQyMjczODA3MzM1IiwiaWF0IjoxNzgwNjI3MjU4LCJleHAiOjE3ODEyMzIwNTgsInZlciI6InYxIiwidHlwIjoicmVmcmVzaF90b2tlbiIsImFjY2Vzc19tb2RlIjoiZGVsZWdhdGVkIiwiY2xpZW50X2lkIjoiY2xpX2E4NjM1NDkzNjk2YTEwMWMiLCJzY29wZSI6ImF1dGg6dXNlci5pZDpyZWFkIGJhc2U6ZmllbGQ6cmVhZCBiaXRhYmxlOmFwcCBjb250YWN0OnVzZXIuYmFzZTpyZWFkb25seSBkb2N4OmRvY3VtZW50IGRyaXZlOmRyaXZlIG9mZmxpbmVfYWNjZXNzIHdpa2k6d2lraSIsImF1dGhfaWQiOiI3NjQ3NDEzMzQ1NTk4OTgzNDA4IiwiYXV0aF90aW1lIjoxNzgwNTUyMTcxLCJhdXRoX2V4cCI6MTgxMjA4ODE3MSwiYXRfaWQiOiI3NjQ3NzM1ODQyMjUyOTY2ODY0IiwiYXRfZXhwIjoxNzgwNjM0NDU4LCJ1bml0IjoiZXVfbmMiLCJ0ZW5hbnRfdW5pdCI6ImV1X25jIiwib3BhcXVlIjp0cnVlLCJlbmMiOiJBaVFrQVFFQ0FNSURBQUVCQXdBQ0FRMEFBd3NMQUFBQUF3QUFBQWRHWldGMGRYSmxBQUFBRUc5aGRYUm9YMjl3WVhGMVpWOXFkM1FBQUFBSVZHVnVZVzUwU1dRQUFBQUJNQUFBQUFSVWFXMWxBQUFBQ2pFM09EQXlOekl3TURBUEFBUU1BQUFBQVFvQUFXTEZJbG12Z0FBaUN3QUNBQUFBRElsQUxSSUxUbytJQUxLN293c0FBd0FBQUREUzhjeGNXNHZEdTNRbmlxb2NXazhZWXIwaThvSnZLRmFkcDJWRGJYaFE1clJnZnJSNjBzd3JjT0FEYjBSZFdjc0FDd0FGQUFBQUJXVjFYMjVqQUpKaHVXaGNOMHAwYTd4NGZ0aExmWWtoR1J2UitzWmV2T1pZT01rL1Q3S0owVjE1aG03V2ZhaEtOVmtLcTNUVUtuUno1K2VWTDkvK0dEQjJySFJqZ0MxeTIvWnplS0VzMVpzenNYMFJrVTd0YmFMMTBBWnNvWUNwcjVGYXhvY2hFcWpMdW9qN3pjM1Qva2c4dzZCM0VIcFFKNm1mSmVuMUZPS0kyWFVJN1dvczBHQzlnSml5UFdQZHMwd0hiQ3BjY0xnYjRnPT0iLCJlbmNfdmVyIjoidjEiLCJzZXNzaW9uX2V4dHJhIjp7ImlzX2Fub255bW91cyI6ZmFsc2UsIm5lZWRfYXV0aCI6ZmFsc2UsInZhbGlkX2Zvcl9hcHBfaWQiOmZhbHNlLCJkcG9wX3RodW1icHJpbnQiOiIiLCJ0ZW5hbnRfY3JlYXRlX3NvdXJjZSI6Mn19.UhKNCJlG2sWGtTtHtN_lZbkINwnN9B206uiueQwTx4J4BWpuqfFl35MSmMck55TOK2EejDBHlh-h_-Oc5CXkkA",
+  "accessToken": "eyJhbGciOiJFUzI1NiIsImZlYXR1cmVfY29kZSI6IkZlYXR1cmVPQXV0aEpXVFNpZ25fQ04iLCJraWQiOiI3NjQ2NTgxNDU1OTMzNDU5NjYwIiwidHlwIjoiSldUIn0.eyJqdGkiOiI3NjQ3OTExMTc2NjI5NjY4Nzk2IiwiaWF0IjoxNzgwNjY4MDgxLCJleHAiOjE3ODA2NzUyODEsInZlciI6InYxIiwidHlwIjoiYWNjZXNzX3Rva2VuIiwiYWNjZXNzX21vZGUiOiJkZWxlZ2F0ZWQiLCJjbGllbnRfaWQiOiJjbGlfYTg2MzU0OTM2OTZhMTAxYyIsInNjb3BlIjoiYXV0aDp1c2VyLmlkOnJlYWQgYmFzZTpmaWVsZDpyZWFkIGJpdGFibGU6YXBwIGNvbnRhY3Q6dXNlci5iYXNlOnJlYWRvbmx5IGRvY3g6ZG9jdW1lbnQgZHJpdmU6ZHJpdmUgb2ZmbGluZV9hY2Nlc3Mgd2lraTp3aWtpIiwiYXV0aF9pZCI6Ijc2NDc0MTMzNDU1OTg5ODM0MDgiLCJhdXRoX3RpbWUiOjE3ODA1NTIxNzEsImF1dGhfZXhwIjoxODEyMDg4MTcxLCJ1bml0IjoiZXVfbmMiLCJ0ZW5hbnRfdW5pdCI6ImV1X25jIiwib3BhcXVlIjp0cnVlLCJlbmMiOiJBaVFrQVFFQ0FNSURBQUVCQXdBQ0FRMEFBd3NMQUFBQUF3QUFBQWRHWldGMGRYSmxBQUFBRUc5aGRYUm9YMjl3WVhGMVpWOXFkM1FBQUFBSVZHVnVZVzUwU1dRQUFBQUJNQUFBQUFSVWFXMWxBQUFBQ2pFM09EQXlOekl3TURBUEFBUU1BQUFBQVFvQUFXTEZJbG12Z0FBaUN3QUNBQUFBRElsQUxSSUxUbytJQUxLN293c0FBd0FBQUREUzhjeGNXNHZEdTNRbmlxb2NXazhZWXIwaThvSnZLRmFkcDJWRGJYaFE1clJnZnJSNjBzd3JjT0FEYjBSZFdjc0FDd0FGQUFBQUJXVjFYMjVqQUppb09KeG4zNlVIM2dpelQrYUVianJ5M1RJT2diQnVMVms2QW1ZdFhLZDFVZEtkTml3Rm5WRTR3Z29RN01Ed0VLcW9keXA5dkMwT0tncExvSEVUak43NDJFdjFBamIyRFE5ZzdWSTB5RVorL2d4VjNhTEhjbUpRRlZ5VjhERVlFVWNCUnZoRVJISmhrZmdnQWRPSW5vSk9QUGpMTTFEMHVxUWFqS3drdnBQMUFmY0Vrd0RFV0ZvalZEQ3Z1dk9JSHBndjZBPT0iLCJlbmNfdmVyIjoidjEiLCJzZXNzaW9uX2V4dHJhIjp7ImlzX2Fub255bW91cyI6ZmFsc2UsIm5lZWRfYXV0aCI6ZmFsc2UsInZhbGlkX2Zvcl9hcHBfaWQiOmZhbHNlLCJkcG9wX3RodW1icHJpbnQiOiIiLCJ0ZW5hbnRfY3JlYXRlX3NvdXJjZSI6Mn19.fzXIDav9yTm6O3yaDiet2VksBd3KzTGylwcRsvLayOq-7bIF1FL7dkYRvxbK_RJFuPXfa4aG07QwrmbXTWlrnQ",
+  "refreshToken": "eyJhbGciOiJFUzI1NiIsImZlYXR1cmVfY29kZSI6IkZlYXR1cmVPQXV0aEpXVFNpZ25fQ04iLCJraWQiOiI3NjQ2NTgxNDU1OTMzNDU5NjYwIiwidHlwIjoiSldUIn0.eyJqdGkiOiI3NjQ3OTExMTc2NjQ2NDI5NjY4IiwiaWF0IjoxNzgwNjY4MDgxLCJleHAiOjE3ODEyNzI4ODEsInZlciI6InYxIiwidHlwIjoicmVmcmVzaF90b2tlbiIsImFjY2Vzc19tb2RlIjoiZGVsZWdhdGVkIiwiY2xpZW50X2lkIjoiY2xpX2E4NjM1NDkzNjk2YTEwMWMiLCJzY29wZSI6ImF1dGg6dXNlci5pZDpyZWFkIGJhc2U6ZmllbGQ6cmVhZCBiaXRhYmxlOmFwcCBjb250YWN0OnVzZXIuYmFzZTpyZWFkb25seSBkb2N4OmRvY3VtZW50IGRyaXZlOmRyaXZlIG9mZmxpbmVfYWNjZXNzIHdpa2k6d2lraSIsImF1dGhfaWQiOiI3NjQ3NDEzMzQ1NTk4OTgzNDA4IiwiYXV0aF90aW1lIjoxNzgwNTUyMTcxLCJhdXRoX2V4cCI6MTgxMjA4ODE3MSwiYXRfaWQiOiI3NjQ3OTExMTc2NjI5NjY4Nzk2IiwiYXRfZXhwIjoxNzgwNjc1MjgxLCJ1bml0IjoiZXVfbmMiLCJ0ZW5hbnRfdW5pdCI6ImV1X25jIiwib3BhcXVlIjp0cnVlLCJlbmMiOiJBaVFrQVFFQ0FNSURBQUVCQXdBQ0FRMEFBd3NMQUFBQUF3QUFBQWRHWldGMGRYSmxBQUFBRUc5aGRYUm9YMjl3WVhGMVpWOXFkM1FBQUFBSVZHVnVZVzUwU1dRQUFBQUJNQUFBQUFSVWFXMWxBQUFBQ2pFM09EQXlOekl3TURBUEFBUU1BQUFBQVFvQUFXTEZJbG12Z0FBaUN3QUNBQUFBRElsQUxSSUxUbytJQUxLN293c0FBd0FBQUREUzhjeGNXNHZEdTNRbmlxb2NXazhZWXIwaThvSnZLRmFkcDJWRGJYaFE1clJnZnJSNjBzd3JjT0FEYjBSZFdjc0FDd0FGQUFBQUJXVjFYMjVqQU1uK1hMM3hFcklJam91ZWtiQmxZaGlnbWtzVFc4MjF0VGpmcWlnd1NVZUROSFh0NWdRSjUvODFsZS9kVGFpSGN3dkFQM1Y2NW0yQnErcHJPOWQxVUpFN0o5MldrQngzdlQwci9uWWpxeWxYYWtQSzJlSUlZQjBVbnNTNjNydHRXcGFMcXMyNUJJTGR3S3VoYjIwSTZTaHVjQ2VzdjFuQ3BYLzlqYm5WTDVueFVaU2puY210SXd6Tkc0Vjc0MEVGcThvVGN3PT0iLCJlbmNfdmVyIjoidjEiLCJzZXNzaW9uX2V4dHJhIjp7ImlzX2Fub255bW91cyI6ZmFsc2UsIm5lZWRfYXV0aCI6ZmFsc2UsInZhbGlkX2Zvcl9hcHBfaWQiOmZhbHNlLCJkcG9wX3RodW1icHJpbnQiOiIiLCJ0ZW5hbnRfY3JlYXRlX3NvdXJjZSI6Mn19.Z7oBiEumN5AdmI64mEyVdsiY35uCio5Z6aXTPxgiOLBH6e-e3ZPizs_Xfr60Uw1MaXr7cCTjDNRB7b-2aOdLjA",
   "userInfo": {
     "name": "用户767895",
     "avatar_url": "https://s3-imfile.feishucdn.com/static-resource/v1/v3_00qv_353fa851-a20c-414a-847c-6d673d1953fg~?image_size=72x72&cut_type=&quality=&format=image&sticker_format=.webp",
@@ -67,22 +67,14 @@
       "docToken": "SqsZdOkPhoXZ5LxrcHkczML2nNf",
       "url": "https://feishu.cn/docx/SqsZdOkPhoXZ5LxrcHkczML2nNf",
       "bitableRecordId": "recvlzD8SfBxdv",
-      "lastSyncedAt": 1780633279555,
-      "localHash": "e0f6bd08",
-      "lastDirection": "obsidian-to-feishu",
-      "status": "synced",
-      "remoteHash": "67b9d75b",
-      "remoteRevision": "403",
-      "docRemoteRevision": "403",
-      "bitableRemoteHash": "67b9d75b",
-      "observedRemoteHash": "67b9d75b",
-      "observedRemoteRevision": "403",
-      "remoteObservedAt": 1780633279555,
-      "observedDocRemoteRevision": "403",
-      "docRemoteObservedAt": 1780633279555,
-      "observedBitableRemoteHash": "67b9d75b",
-      "bitableRemoteObservedAt": 1780633279535,
-      "localMissing": false
+      "lastSyncedAt": 1780670781678,
+      "status": "error",
+      "bitableProfileId": "ioto-task",
+      "bitableAppToken": "Wl3rbgORca63instiTpcaz1DnvZ",
+      "bitableTableId": "tbl02ZXD0Kkb2xOB",
+      "bitableViewId": "vewx3UsjHG",
+      "lastDirection": "bitable",
+      "lastError": "IOTO Task Profile 远端记录已删除（recordId: recvlzD8SfBxdv），本地文件暂时保留"
     },
     {
       "filePath": "JOB_PORTFOLIO_PLAN.zh-CN.md",
@@ -90,26 +82,25 @@
       "docToken": "Wz91dcs9vonbSXxprOZcmopznKd",
       "url": "https://feishu.cn/docx/Wz91dcs9vonbSXxprOZcmopznKd",
       "bitableRecordId": "recvlyhjJK7v4U",
-      "lastSyncedAt": 1780552620539,
-      "localHash": "d7b4e2ce",
-      "lastDirection": "obsidian-to-feishu",
-      "status": "synced",
-      "remoteHash": "89a7b59f",
-      "remoteRevision": "2",
-      "docRemoteRevision": "2",
-      "bitableRemoteHash": "89a7b59f",
-      "observedRemoteHash": "89a7b59f",
-      "observedRemoteRevision": "2",
-      "remoteObservedAt": 1780552620539,
-      "observedDocRemoteRevision": "2",
-      "docRemoteObservedAt": 1780552620539,
-      "observedBitableRemoteHash": "89a7b59f",
-      "bitableRemoteObservedAt": 1780552620507
+      "lastSyncedAt": 1780670781678,
+      "status": "error",
+      "bitableProfileId": "ioto-task",
+      "bitableAppToken": "Wl3rbgORca63instiTpcaz1DnvZ",
+      "bitableTableId": "tbl02ZXD0Kkb2xOB",
+      "bitableViewId": "vewx3UsjHG",
+      "lastDirection": "bitable",
+      "lastError": "IOTO Task Profile 远端记录已删除（recordId: recvlyhjJK7v4U），本地文件暂时保留"
     }
   ],
   "bitableAppToken": "TX1VbIGq0a8kljsvFUCcsX8PnLb",
   "bitableTableId": "tbld9cCM96PYKNeF",
-  "bitableTableOptionsCache": [],
+  "bitableTableOptionsCache": [
+    {
+      "tableId": "tbld9cCM96PYKNeF",
+      "name": "IOTO",
+      "revision": 163
+    }
+  ],
   "bitableFieldMapping": "",
   "bitableFieldNamesCache": [
     "title",
@@ -125,5 +116,139 @@
     "slug",
     "folder"
   ],
-  "bitableExcludedFields": ""
+  "bitableExcludedFields": "",
+  "bitableProfiles": [
+    {
+      "id": "ioto-task",
+      "name": "IOTO Task Profile",
+      "enabled": true,
+      "appToken": "Wl3rbgORca63instiTpcaz1DnvZ",
+      "tableId": "tbl02ZXD0Kkb2xOB",
+      "viewId": "vewx3UsjHG",
+      "targetDir": "IOTO/Tasks",
+      "fileNameTemplate": "{{title}}",
+      "fieldMapping": {
+        "title": [
+          "任务",
+          "任务描述",
+          "Title",
+          "title",
+          "名称"
+        ],
+        "body": [
+          "正文",
+          "说明",
+          "Description",
+          "description",
+          "content"
+        ],
+        "stage": [
+          "阶段",
+          "Stage",
+          "stage"
+        ],
+        "status": "状态",
+        "ai_scope": [
+          "AI Scope",
+          "AI范围",
+          "AI 范围",
+          "ai_scope"
+        ],
+        "owner": [
+          "负责人",
+          "Owner",
+          "owner"
+        ],
+        "project": [
+          "项目",
+          "Project",
+          "project"
+        ],
+        "source": [
+          "来源",
+          "Source",
+          "source"
+        ],
+        "related": [
+          "关联",
+          "Related",
+          "related"
+        ],
+        "next_action": [
+          "下一步",
+          "Next Action",
+          "next_action"
+        ],
+        "review_required": [
+          "需复核",
+          "Review Required",
+          "review_required"
+        ],
+        "priority": [
+          "优先级",
+          "Priority",
+          "priority"
+        ],
+        "category": [
+          "分类",
+          "Category",
+          "category"
+        ]
+      },
+      "statusMapping": {
+        "未开始": "todo",
+        "待处理": "todo",
+        "进行中": "doing",
+        "处理中": "doing",
+        "已完成": "done",
+        "完成": "done",
+        "已取消": "cancelled",
+        "todo": "todo",
+        "doing": "doing",
+        "done": "done",
+        "cancelled": "cancelled"
+      },
+      "reverseStatusMapping": {
+        "todo": "未开始",
+        "doing": "进行中",
+        "done": "已完成",
+        "cancelled": "已取消"
+      },
+      "bodyFields": [
+        "body"
+      ],
+      "primaryBodyField": "body",
+      "bodyTemplate": "{{body}}",
+      "syncUncontrolledBody": true,
+      "fieldNamesCache": [
+        "🟦任务描述",
+        "🟦分类",
+        "🟦优先级",
+        "🟩需求梳理",
+        "🟩阶段目标",
+        "父记录",
+        "🟩参考资料",
+        "🟩困难定位",
+        "🟨结果产出",
+        "🟨耗时",
+        "完成时间",
+        "🚩 项目",
+        "状态",
+        "开始时间",
+        "截止时间",
+        "估时",
+        "附件"
+      ],
+      "tableOptionsCache": [],
+      "scheduledSyncEnabled": false,
+      "scheduledSyncIntervalMinutes": 30,
+      "scheduledSyncRunOnStartup": false,
+      "frontmatterFields": []
+    }
+  ],
+  "activeBitableProfileId": "ioto-task",
+  "enableScheduledBitableProfiles": false,
+  "scheduledBitableProfileIds": [
+    "ioto-task"
+  ]
 }

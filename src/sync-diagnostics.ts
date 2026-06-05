@@ -1,6 +1,6 @@
 import type { SyncDirection, SyncStateItem, SyncStatus } from './types';
 
-export type SyncStatusFilter = 'all' | 'problem' | SyncStatus;
+export type SyncStatusFilter = 'all' | 'problem' | 'localDeleted' | 'remoteDeleted' | SyncStatus;
 
 export type SyncStatusCounts = Record<SyncStatusFilter, number>;
 
@@ -44,6 +44,7 @@ export type SyncStatusView = {
 export type DateFormatter = (timestamp: number) => string;
 
 const defaultDateFormatter: DateFormatter = (timestamp) => new Date(timestamp).toLocaleString();
+const REMOTE_MISSING_ERROR_PATTERN = /^.+远端记录已删除/i;
 
 export function normalizeSyncStatus(status?: string): SyncStatus {
 	if (status === 'conflict' || status === 'error') {
@@ -56,6 +57,8 @@ export function getSyncStatusCounts(states: SyncStateItem[]): SyncStatusCounts {
 	const counts: SyncStatusCounts = {
 		all: states.length,
 		problem: 0,
+		localDeleted: 0,
+		remoteDeleted: 0,
 		synced: 0,
 		conflict: 0,
 		error: 0
@@ -63,6 +66,12 @@ export function getSyncStatusCounts(states: SyncStateItem[]): SyncStatusCounts {
 	states.forEach((state) => {
 		const status = normalizeSyncStatus(state.status);
 		counts[status] += 1;
+		if (state.localMissing) {
+			counts.localDeleted += 1;
+		}
+		if (isRemoteMissingState(state)) {
+			counts.remoteDeleted += 1;
+		}
 		if (isProblemState(state, status)) {
 			counts.problem += 1;
 		}
@@ -78,6 +87,12 @@ export function filterSyncStates(states: SyncStateItem[], filter: SyncStatusFilt
 		const status = normalizeSyncStatus(state.status);
 		if (filter === 'problem') {
 			return isProblemState(state, status);
+		}
+		if (filter === 'localDeleted') {
+			return !!state.localMissing;
+		}
+		if (filter === 'remoteDeleted') {
+			return isRemoteMissingState(state);
 		}
 		return status === filter;
 	});
@@ -109,7 +124,7 @@ export function buildSyncStatusView(state: SyncStateItem, formatDate: DateFormat
 	const status = normalizeSyncStatus(state.status);
 	const detailParts = buildSyncStatusDetails(state, formatDate);
 	const recommendation = getSyncStatusRecommendation(state, status);
-	const canSync = !!state.filePath && !state.localMissing;
+	const canSync = !!state.filePath && !state.localMissing && !isRemoteMissingState(state);
 	return {
 		state,
 		status,
@@ -146,7 +161,12 @@ export function formatSyncBatchSummary(summary: SyncBatchSummary): string {
 export function buildSyncStatusDetails(state: SyncStateItem, formatDate: DateFormatter = defaultDateFormatter): SyncStatusDetail[] {
 	const details: SyncStatusDetail[] = [];
 	addDetail(details, '方向', formatSyncDirection(state.lastDirection || ''), 'summary');
+	if (isRemoteMissingState(state)) {
+		addDetail(details, '远端状态', '已删除', 'summary');
+	}
 	addDetail(details, '本地哈希', state.localHash, 'baseline');
+	addDetail(details, '文档本地哈希', state.docLocalHash, 'baseline');
+	addDetail(details, 'Bitable 本地哈希', state.bitableLocalHash, 'baseline');
 	addDetail(details, '远端哈希', state.remoteHash, 'baseline');
 	addDetail(details, '远端 revision', state.remoteRevision, 'baseline');
 	addDetail(details, '远端时间', formatOptionalDate(state.remoteUpdatedAt, formatDate), 'baseline');
@@ -194,6 +214,9 @@ export function getSyncStatusSummary(state: SyncStateItem, status: SyncStatus = 
 	if (state.localMissing) {
 		return '本地文件已删除，需恢复文件或清理映射';
 	}
+	if (isRemoteMissingState(state)) {
+		return '远端记录已删除，本地文件暂时保留，请手动处理';
+	}
 	if (status === 'conflict') {
 		return '本地和远端都发生变化，需要选择保留哪一侧';
 	}
@@ -223,6 +246,13 @@ export function getSyncStatusRecommendation(state: SyncStateItem, status: SyncSt
 			level: 'blocked',
 			label: '本地文件缺失',
 			action: '恢复本地文件后再同步，或清理这条本地映射'
+		};
+	}
+	if (isRemoteMissingState(state)) {
+		return {
+			level: 'blocked',
+			label: '远端已删除',
+			action: '当前不会自动删除本地文件，可保留本地文件或只清除记录'
 		};
 	}
 	if (status === 'conflict') {
@@ -276,6 +306,12 @@ export function getSyncStatusRecommendation(state: SyncStateItem, status: SyncSt
 	};
 }
 
+export function isRemoteMissingState(state: SyncStateItem | null | undefined): boolean {
+	return !!state
+		&& normalizeSyncStatus(state.status) === 'error'
+		&& REMOTE_MISSING_ERROR_PATTERN.test(String(state.lastError || '').trim());
+}
+
 function isProblemStatus(status: SyncStatus): boolean {
 	return status === 'conflict' || status === 'error';
 }
@@ -286,7 +322,7 @@ function isProblemState(state: SyncStateItem, status: SyncStatus = normalizeSync
 
 function getSortPriority(state: SyncStateItem): number {
 	const status = normalizeSyncStatus(state.status);
-	if (status === 'conflict' || state.localMissing) {
+	if (status === 'conflict' || state.localMissing || isRemoteMissingState(state)) {
 		return 3;
 	}
 	if (status === 'error') {

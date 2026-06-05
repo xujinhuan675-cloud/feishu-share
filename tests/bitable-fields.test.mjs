@@ -22,6 +22,7 @@ async function loadModule() {
 
 const {
 	bitableFieldToPlainText,
+	bitableFieldToDisplayText,
 	bitableFieldToFrontMatterValue,
 	normalizeBitableWriteValue
 } = await loadModule();
@@ -32,6 +33,19 @@ test('plain text extractor understands structured hyperlink and rich objects', (
 		'Alpha, https://example.com'
 	);
 	assert.equal(bitableFieldToPlainText({ name: 'Owner A' }), 'Owner A');
+});
+
+test('empty structured bitable objects are treated as empty instead of JSON blobs', () => {
+	const emptyRelation = {
+		record_ids: null,
+		table_id: 'tbl02ZXD0Kkb2xOB',
+		text: null,
+		text_arr: [],
+		type: 'text'
+	};
+	assert.equal(bitableFieldToPlainText(emptyRelation), '');
+	assert.equal(bitableFieldToDisplayText(emptyRelation), '');
+	assert.equal(bitableFieldToFrontMatterValue(emptyRelation), undefined);
 });
 
 test('front matter conversion keeps array-like multiselect values', () => {

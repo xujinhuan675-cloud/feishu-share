@@ -3,17 +3,45 @@ import FeishuPlugin from '../main';
 import { ManualAuthModal } from './manual-auth-modal';
 import { FolderSelectModal } from './folder-select-modal';
 import { WikiSelectModal } from './wiki-select-modal';
-import { buildSyncStatusView, filterSyncStates, formatSyncBatchSummary, formatSyncStatus, getSyncStatusCounts, searchSyncStates, sortSyncStates } from './sync-diagnostics';
-import type { BitableTableOption, ScheduledSyncReport, ScheduledSyncScope, SyncStateItem } from './types';
+import { buildSyncStatusView, formatSyncBatchSummary, formatSyncStatus, getSyncStatusCounts, isRemoteMissingState, sortSyncStates } from './sync-diagnostics';
+import type { BitableSyncProfile, BitableTableOption, ScheduledSyncReport, ScheduledSyncScope, SyncStateItem, UploadHistoryItem } from './types';
 import type { SyncStatusCounts, SyncStatusFilter } from './sync-diagnostics';
+
+type BitableUiBinding = {
+	getAppToken: () => string;
+	getTableId: () => string;
+	setTableId: (value: string) => void;
+	getTableOptions: () => BitableTableOption[];
+	setTableOptions: (tables: BitableTableOption[]) => void;
+	getFieldNames: () => string[];
+	setFieldNames: (names: string[]) => void;
+	parseMapping: () => Record<string, string>;
+	saveMapping: (mapping: Record<string, string>) => Promise<void>;
+	logicalFields: Array<[string, string]>;
+	defaultHint: string;
+	onChange: () => Promise<void>;
+};
+
+type HistoryListEntry = {
+	key: string;
+	filePath: string;
+	title: string;
+	docToken: string;
+	url: string;
+	bitableRecordId: string;
+	updatedAt?: number;
+	localDeletedAt?: number;
+	history?: UploadHistoryItem;
+	state?: SyncStateItem;
+};
 
 export class FeishuSettingTab extends PluginSettingTab {
 	plugin: FeishuPlugin;
-	private activeTab: 'basic' | 'history' | 'status' = 'basic';
+	private activeTab: 'basic' | 'tasks' | 'history' = 'basic';
 	private historySearchQuery: string = '';
-	private syncStatusSearchQuery: string = '';
 	private syncStatusFilter: SyncStatusFilter = 'all';
-	private selectedHistoryDocTokens: Set<string> = new Set();
+	private selectedHistoryEntryKeys: Set<string> = new Set();
+	private expandedHistoryEntries: Set<string> = new Set();
 
 	private isNotFoundError(error: unknown): boolean {
 		const msg = (error as any)?.message ? String((error as any).message) : String(error);
@@ -79,6 +107,10 @@ export class FeishuSettingTab extends PluginSettingTab {
 				.sync-status-filter-btn.is-active{background:var(--interactive-accent);color:var(--text-on-accent);}
 				.sync-status-filter-btn.is-empty{opacity:.45;}
 				.sync-status-summary{font-size:12px;color:var(--text-muted);}
+				.history-diagnostic-panel{margin-top:10px;padding-top:10px;border-top:1px solid var(--background-modifier-border);}
+				.history-diagnostic-muted{margin-top:6px;font-size:12px;color:var(--text-muted);line-height:1.45;}
+				.history-diagnostic-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;}
+				.sync-status-badge.pending{color:var(--text-muted);}
 				.bitable-field-mapping-panel{margin:10px 0 14px;padding:10px 12px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary);}
 				.bitable-field-mapping-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;}
 				.bitable-field-mapping-title{font-weight:700;}
@@ -92,40 +124,41 @@ export class FeishuSettingTab extends PluginSettingTab {
 
 		const tabBar = containerEl.createDiv({ cls: 'feishu-settings-tabs' });
 		const basicTabBtn = tabBar.createEl('button', {
-			text: '基础设置',
+			text: '\u6587\u6863\u540c\u6b65',
 			cls: `feishu-settings-tab-btn${this.activeTab === 'basic' ? ' is-active' : ''}`
 		});
-		const historyTabBtn = tabBar.createEl('button', {
-			text: '已上传文档列表',
-			cls: `feishu-settings-tab-btn${this.activeTab === 'history' ? ' is-active' : ''}`
+		const tasksTabBtn = tabBar.createEl('button', {
+			text: '\u4efb\u52a1\u8868',
+			cls: `feishu-settings-tab-btn${this.activeTab === 'tasks' ? ' is-active' : ''}`
 		});
-		const statusTabBtn = tabBar.createEl('button', {
-			text: '同步状态',
-			cls: `feishu-settings-tab-btn${this.activeTab === 'status' ? ' is-active' : ''}`
+		const historyTabBtn = tabBar.createEl('button', {
+			text: '\u5df2\u4e0a\u4f20\u6587\u6863\u5217\u8868',
+			cls: `feishu-settings-tab-btn${this.activeTab === 'history' ? ' is-active' : ''}`
 		});
 		basicTabBtn.addEventListener('click', () => {
 			this.activeTab = 'basic';
+			this.display();
+		});
+		tasksTabBtn.addEventListener('click', () => {
+			this.activeTab = 'tasks';
 			this.display();
 		});
 		historyTabBtn.addEventListener('click', () => {
 			this.activeTab = 'history';
 			this.display();
 		});
-		statusTabBtn.addEventListener('click', () => {
-			this.activeTab = 'status';
-			this.display();
-		});
 
 		const basicPanel = containerEl.createDiv({ cls: 'feishu-settings-tab-panel' });
+		const tasksPanel = containerEl.createDiv({ cls: 'feishu-settings-tab-panel' });
 		const historyPanel = containerEl.createDiv({ cls: 'feishu-settings-tab-panel' });
-		const statusPanel = containerEl.createDiv({ cls: 'feishu-settings-tab-panel' });
 		basicPanel.style.display = this.activeTab === 'basic' ? '' : 'none';
+		tasksPanel.style.display = this.activeTab === 'tasks' ? '' : 'none';
 		historyPanel.style.display = this.activeTab === 'history' ? '' : 'none';
-		statusPanel.style.display = this.activeTab === 'status' ? '' : 'none';
 
 		this.renderBasicSettings(basicPanel);
+		this.renderTaskSyncSettings(basicPanel);
+		this.renderTaskProfilesSettings(tasksPanel);
 		this.renderHistoryPanel(historyPanel);
-		this.renderSyncStatusPanel(statusPanel);
 	}
 
 	private renderBasicSettings(containerEl: HTMLElement): void {
@@ -471,6 +504,15 @@ export class FeishuSettingTab extends PluginSettingTab {
 				});
 		}
 
+
+
+	}
+
+	private renderTaskSyncSettings(containerEl: HTMLElement): void {
+		containerEl.createEl('h3', { text: '📚 文档索引表' });
+		const desc = containerEl.createDiv({ cls: 'setting-item-description' });
+		desc.style.marginBottom = '12px';
+		desc.setText('这里配置文档同步时使用的多维表索引能力；任务表同步放在单独的“任务表”标签页。');
 		// 同步设置（从 feishusync 迁入，基于 feishushare-main 扩展）
 		containerEl.createEl('h3', { text: '🔄 同步设置' });
 
@@ -526,12 +568,21 @@ export class FeishuSettingTab extends PluginSettingTab {
 			.addToggle(toggle => {
 				toggle
 					.setValue(!!this.plugin.settings.enableScheduledSync)
-					.onChange(async (value: boolean) => {
-						this.plugin.settings.enableScheduledSync = value;
-						await this.plugin.saveSettings();
-						this.display();
-					});
-			});
+						.onChange(async (value: boolean) => {
+							this.plugin.settings.enableScheduledSync = value;
+							await this.plugin.saveSettings();
+							this.display();
+						});
+				})
+				.addButton(btn => {
+					btn
+						.setButtonText('立即同步一次')
+						.setCta()
+						.onClick(async () => {
+							await this.plugin.runScheduledSmartSync('manual', true);
+							this.display();
+						});
+				});
 
 		if (this.plugin.settings.enableScheduledSync) {
 			new Setting(containerEl)
@@ -591,18 +642,6 @@ export class FeishuSettingTab extends PluginSettingTab {
 						});
 				});
 
-			new Setting(containerEl)
-				.setName('立即执行一次定时同步')
-				.setDesc('按当前定时同步范围手动执行一次非交互式智能同步')
-				.addButton(btn => {
-					btn
-						.setButtonText('立即执行')
-						.setCta()
-						.onClick(async () => {
-							await this.plugin.runScheduledSmartSync('manual', true);
-							this.display();
-						});
-				});
 			const reportText = this.describeScheduledSyncReport(this.plugin.settings.scheduledSyncReport);
 			if (reportText) {
 				const reportEl = containerEl.createDiv({ cls: 'setting-item-description' });
@@ -700,199 +739,357 @@ export class FeishuSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					}));
 
-			new Setting(containerEl)
-				.setName('字段映射 JSON')
-				.setDesc('将插件逻辑字段映射到多维表格字段名。留空使用默认字段名。')
-				.addTextArea(text => text
-					.setPlaceholder('例如：{\n  "title": "标题",\n  "content": "正文",\n  "link": "飞书链接"\n}')
-					.setValue(this.plugin.settings.bitableFieldMapping || '')
-					.onChange(async (value: string) => {
-						this.plugin.settings.bitableFieldMapping = value;
-						await this.plugin.saveSettings();
-					}));
 			this.renderBitableFieldMappingHint(containerEl);
 			this.renderBitableFieldMappingAssistant(containerEl);
 		}
 
-
-
 	}
 
-	private renderBitableTableAssistant(containerEl: HTMLElement): void {
-		const panel = containerEl.createDiv({ cls: 'bitable-field-mapping-panel' });
-		const toolbar = panel.createDiv({ cls: 'bitable-field-mapping-toolbar' });
-		toolbar.createDiv({ text: '数据表选择助手', cls: 'bitable-field-mapping-title' });
-		const actions = toolbar.createDiv({ cls: 'bitable-field-mapping-actions' });
-		const loadButton = actions.createEl('button', { text: '读取数据表' });
-		const hint = panel.createDiv({ cls: 'bitable-field-mapping-hint' });
-		const tables = this.getCachedBitableTableOptions();
-		const currentTableId = String(this.plugin.settings.bitableTableId || '').trim();
+	private renderTaskProfilesSettings(containerEl: HTMLElement): void {
+		containerEl.createEl('h3', { text: '🗂️ 任务表同步' });
+		const desc = containerEl.createDiv({ cls: 'setting-item-description' });
+		desc.style.marginBottom = '12px';
+		desc.setText('任务表使用独立的 appToken / tableId / viewId，把飞书多维表记录同步到本地 Markdown。文档索引表配置保留在“文档同步”标签页。');
+		this.renderBitableProfilesSettings(containerEl);
+	}
 
-		const renderTableSelect = (target: HTMLElement, options: BitableTableOption[]) => {
-			const grid = target.createDiv({ cls: 'bitable-field-mapping-grid' });
-			grid.createDiv({ text: '选择数据表', cls: 'bitable-field-mapping-label' });
-			const select = grid.createEl('select', { cls: 'bitable-field-mapping-select' });
-			select.createEl('option', { text: '保留手动填写的 Table ID', value: '' });
-			for (const option of options) {
-				const label = option.name ? `${option.name} (${option.tableId})` : option.tableId;
-				select.createEl('option', { text: label, value: option.tableId });
+	private createNewBitableProfile(): BitableSyncProfile {
+		const suffix = Date.now().toString(36);
+		return {
+			id: `profile-${suffix}`,
+			name: `新任务表 ${suffix.slice(-4)}`,
+			enabled: true,
+			appToken: '',
+			tableId: '',
+			viewId: '',
+			targetDir: 'Tasks',
+			fileNameTemplate: '{{title}}',
+			fieldMapping: {},
+			statusMapping: {},
+			reverseStatusMapping: {},
+			bodyFields: ['body'],
+			primaryBodyField: 'body',
+			bodyTemplate: '{{body}}',
+			syncUncontrolledBody: false,
+			fieldNamesCache: [],
+			tableOptionsCache: [],
+			scheduledSyncEnabled: false,
+			scheduledSyncIntervalMinutes: 30,
+			scheduledSyncRunOnStartup: false
+		};
+	}
+
+	private getProfileRemoteStatusValue(profile: BitableSyncProfile, localStatus: string): string {
+		return String(profile.reverseStatusMapping?.[localStatus] || '').trim();
+	}
+
+	private setProfileRemoteStatusValue(profile: BitableSyncProfile, localStatus: string, remoteStatus: string): void {
+		const cleanRemote = String(remoteStatus || '').trim();
+		const nextReverse = { ...(profile.reverseStatusMapping || {}) };
+		if (cleanRemote) {
+			nextReverse[localStatus] = cleanRemote;
+		} else {
+			delete nextReverse[localStatus];
+		}
+		const nextStatus: Record<string, string> = {};
+		for (const [local, remote] of Object.entries(nextReverse)) {
+			if (!remote) {
+				continue;
 			}
-			if (currentTableId && options.some((option) => option.tableId === currentTableId)) {
-				select.value = currentTableId;
-			}
-			select.addEventListener('change', async () => {
-				const next = String(select.value || '').trim();
-				if (next && next !== this.plugin.settings.bitableTableId) {
-					this.plugin.settings.bitableTableId = next;
-					this.plugin.settings.bitableFieldNamesCache = [];
+			nextStatus[remote] = local;
+		}
+		for (const local of ['todo', 'doing', 'done', 'cancelled']) {
+			nextStatus[local] = local;
+		}
+		profile.reverseStatusMapping = nextReverse;
+		profile.statusMapping = nextStatus;
+	}
+
+	private renderBitableProfilesSettings(containerEl: HTMLElement): void {
+		const profiles = this.getBitableProfilesForSettings();
+		const activeProfileId = this.plugin.settings.activeBitableProfileId || profiles[0]?.id || '';
+		const activeIndex = Math.max(0, profiles.findIndex((profile) => profile.id === activeProfileId));
+		const activeProfile = profiles[activeIndex];
+		new Setting(containerEl)
+			.setName('当前任务表')
+			.setDesc('选择要编辑的任务 Profile。')
+			.addDropdown(dropdown => {
+				for (const profile of profiles) {
+					dropdown.addOption(profile.id, profile.name || profile.id);
+				}
+				dropdown.setValue(activeProfile?.id || '');
+				dropdown.onChange(async (value: string) => {
+					this.plugin.settings.activeBitableProfileId = value;
 					await this.plugin.saveSettings();
 					this.display();
-				}
-			});
-		};
+				});
+			})
+			.addButton(button => button
+				.setButtonText('新增')
+				.onClick(async () => {
+					const created = this.createNewBitableProfile();
+					this.plugin.settings.bitableProfiles = [...profiles, created];
+					this.plugin.settings.activeBitableProfileId = created.id;
+					await this.plugin.saveSettings();
+					this.display();
+				}))
+			.addButton(button => button
+				.setButtonText('删除')
+				.setWarning()
+				.onClick(async () => {
+					if (!activeProfile) {
+						return;
+					}
+					if (!confirm(`确定删除任务 Profile「${activeProfile.name || activeProfile.id}」吗？`)) {
+						return;
+					}
+					const nextProfiles = profiles.filter((profile) => profile.id !== activeProfile.id);
+					this.plugin.settings.bitableProfiles = nextProfiles;
+					this.plugin.settings.activeBitableProfileId = nextProfiles[0]?.id || '';
+					await this.plugin.saveSettings();
+					this.display();
+				}));
 
-		if (!tables.length) {
-			hint.setText('先填写或粘贴 App Token，再点击“读取数据表”。若读取失败，仍可手动填写 Table ID。');
-		} else {
-			renderTableSelect(panel, tables);
-			hint.setText(`已读取 ${tables.length} 张数据表${currentTableId ? `；当前 Table ID：${currentTableId}` : ''}`);
-		}
-
-		loadButton.onclick = async () => {
-			try {
-				if (!this.plugin.settings.bitableAppToken) {
-					new Notice('❌ 请先填写 Bitable App Token');
-					return;
-				}
-				loadButton.disabled = true;
-				loadButton.textContent = '读取中...';
-				const result = await this.plugin.feishuApi.getBitableTables(this.plugin.settings.bitableAppToken);
-				if (!result.success || !result.tables) {
-					new Notice(`❌ 读取数据表失败：${result.error || '未知错误'}`);
-					return;
-				}
-				this.setCachedBitableTableOptions(result.tables);
-				if (!this.plugin.settings.bitableTableId && result.tables.length === 1) {
-					this.plugin.settings.bitableTableId = result.tables[0].tableId;
-				}
-				await this.plugin.saveSettings();
-				new Notice(`✅ 已读取 ${result.tables.length} 张数据表`);
-				this.display();
-			} catch (error) {
-				new Notice(`❌ 读取数据表失败：${(error as Error).message}`);
-			} finally {
-				loadButton.disabled = false;
-				loadButton.textContent = '读取数据表';
-			}
-		};
-	}
-
-	private renderBitableFieldMappingHint(containerEl: HTMLElement): void {
-		const raw = String(this.plugin.settings.bitableFieldMapping || '').trim();
-		const hint = containerEl.createDiv({ cls: 'setting-item-description' });
-		hint.style.marginTop = '-8px';
-		hint.style.marginBottom = '10px';
-		if (!raw) {
-			hint.setText('当前使用默认字段名：title、content、status、link、created、updated、tags、excerpt、author、aliases、slug、folder、value、recordId。');
+		if (!activeProfile) {
+			containerEl.createEl('p', { text: '暂无任务 Profile，请先新增一个。', cls: 'upload-history-empty' });
 			return;
 		}
-		try {
-			const parsed = JSON.parse(raw);
-			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-				throw new Error('必须是 JSON 对象');
-			}
-			const count = Object.entries(parsed).filter(([key, value]) => String(key || '').trim() && String(value || '').trim()).length;
-			hint.setText(`字段映射有效：${count} 项。`);
-		} catch (error) {
-			hint.setText(`字段映射 JSON 格式错误：${(error as Error).message}`);
-			hint.addClass('mod-warning');
+
+		new Setting(containerEl)
+			.setName('启用任务表')
+			.setDesc('关闭后，该 Profile 不参与自动匹配或定时同步。')
+			.addToggle(toggle => toggle
+				.setValue(activeProfile.enabled !== false)
+				.onChange(async (value: boolean) => {
+					activeProfile.enabled = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('名称')
+			.setDesc('用于设置页显示和同步提示。')
+			.addText(text => text
+				.setPlaceholder('例如：IOTO 任务表')
+				.setValue(activeProfile.name || '')
+				.onChange(async (value: string) => {
+					activeProfile.name = value.trim() || activeProfile.id;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Profile ID')
+			.setDesc('作为本地映射和 frontmatter 中的稳定标识。')
+			.addText(text => text
+				.setPlaceholder('例如：ioto-task')
+				.setValue(activeProfile.id || '')
+				.onChange(async (value: string) => {
+					const nextId = value.trim();
+					if (!nextId) {
+						return;
+					}
+					const exists = profiles.some((profile, index) => index !== activeIndex && profile.id === nextId);
+					if (exists) {
+						new Notice('❌ Profile ID 不能重复');
+						return;
+					}
+					activeProfile.id = nextId;
+					this.plugin.settings.activeBitableProfileId = nextId;
+					await this.plugin.saveSettings();
+				}));
+
+		const normalizeBitableInput = (input: string) => String(input || '')
+			.trim()
+			.replace(/^[\s"'“”‘’]+/, '')
+			.replace(/[\s"'“”‘’]+$/, '')
+			.trim();
+		const extractBitableFromText = (text: string): { appToken?: string; tableId?: string; viewId?: string } => {
+			const s = String(text || '');
+			const appTokenFromApps = s.match(/\/apps\/([A-Za-z0-9_-]+)/)?.[1];
+			const appTokenFromBase = s.match(/\/(?:base|app)\/([A-Za-z0-9_-]+)/)?.[1];
+			const tableId = s.match(/\b(tbl[A-Za-z0-9_-]+)\b/)?.[1];
+			const viewId = s.match(/\b(vew[A-Za-z0-9_-]+)\b/)?.[1];
+			return {
+				appToken: appTokenFromApps || appTokenFromBase,
+				tableId,
+				viewId
+			};
+		};
+
+		new Setting(containerEl)
+			.setName('Bitable App Token')
+			.setDesc('任务表所属 Base 的 appToken。')
+			.addText(text => text
+				.setPlaceholder('bascn... 或 Base 链接')
+				.setValue(activeProfile.appToken || '')
+				.onChange(async (value: string) => {
+					const cleaned = normalizeBitableInput(value);
+					const extracted = extractBitableFromText(cleaned);
+					const prev = activeProfile.appToken || '';
+					activeProfile.appToken = (extracted.appToken || cleaned).trim();
+					if (extracted.tableId) {
+						activeProfile.tableId = extracted.tableId.trim();
+					}
+					if (extracted.viewId) {
+						activeProfile.viewId = extracted.viewId.trim();
+					}
+					if ((activeProfile.appToken || '') !== prev) {
+						activeProfile.tableOptionsCache = [];
+						activeProfile.fieldNamesCache = [];
+					}
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
+		new Setting(containerEl)
+			.setName('Bitable Table ID')
+			.setDesc('任务表所在的数据表 ID。')
+			.addText(text => text
+				.setPlaceholder('tbl...')
+				.setValue(activeProfile.tableId || '')
+				.onChange(async (value: string) => {
+					const cleaned = normalizeBitableInput(value);
+					const extracted = extractBitableFromText(cleaned);
+					const prev = activeProfile.tableId || '';
+					activeProfile.tableId = (extracted.tableId || cleaned).trim();
+					if (extracted.appToken) {
+						activeProfile.appToken = extracted.appToken.trim();
+					}
+					if (extracted.viewId) {
+						activeProfile.viewId = extracted.viewId.trim();
+					}
+					if ((activeProfile.tableId || '') !== prev) {
+						activeProfile.fieldNamesCache = [];
+					}
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
+		new Setting(containerEl)
+			.setName('View ID')
+			.setDesc('可选；仅同步指定视图中的记录。')
+			.addText(text => text
+				.setPlaceholder('vew...')
+				.setValue(activeProfile.viewId || '')
+				.onChange(async (value: string) => {
+					activeProfile.viewId = normalizeBitableInput(value);
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('目标目录')
+			.setDesc('每条记录会映射为该目录中的一个 Markdown 文件。')
+			.addText(text => text
+				.setPlaceholder('例如：IOTO/Tasks')
+				.setValue(activeProfile.targetDir || '')
+				.onChange(async (value: string) => {
+					activeProfile.targetDir = value.trim();
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('文件名模板')
+			.setDesc('支持 {{title}} 和 {{recordId}}。')
+			.addText(text => text
+				.setPlaceholder('{{title}}')
+				.setValue(activeProfile.fileNameTemplate || '{{title}}')
+				.onChange(async (value: string) => {
+					activeProfile.fileNameTemplate = value.trim() || '{{title}}';
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('正文模板')
+			.setDesc('控制远端正文类字段写入受控区块时的模板。')
+			.addTextArea(text => text
+				.setPlaceholder('{{body}}')
+				.setValue(activeProfile.bodyTemplate || '{{body}}')
+				.onChange(async (value: string) => {
+					activeProfile.bodyTemplate = value || '{{body}}';
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('允许回写受控区块外正文')
+			.setDesc('开启后，可将受控区块外的本地正文一起回写到飞书正文类字段。')
+			.addToggle(toggle => toggle
+				.setValue(!!activeProfile.syncUncontrolledBody)
+				.onChange(async (value: boolean) => {
+					activeProfile.syncUncontrolledBody = value;
+					await this.plugin.saveSettings();
+				}));
+
+		containerEl.createEl('h4', { text: '状态映射' });
+		const statusRows: Array<[string, string]> = [
+			['todo', '本地 todo'],
+			['doing', '本地 doing'],
+			['done', '本地 done'],
+			['cancelled', '本地 cancelled']
+		];
+		for (const [localStatus, label] of statusRows) {
+			new Setting(containerEl)
+				.setName(label)
+				.setDesc('填写飞书表中对应的状态值。')
+				.addText(text => text
+					.setPlaceholder('例如：进行中')
+					.setValue(this.getProfileRemoteStatusValue(activeProfile, localStatus))
+					.onChange(async (value: string) => {
+						this.setProfileRemoteStatusValue(activeProfile, localStatus, value);
+						await this.plugin.saveSettings();
+					}));
 		}
+
+		containerEl.createEl('h4', { text: '定时同步' });
+		new Setting(containerEl)
+			.setName('启用该任务表的定时同步')
+			.setDesc('按该 Profile 自己的频率从飞书拉取记录并更新本地文件。')
+			.addToggle(toggle => toggle
+				.setValue(!!activeProfile.scheduledSyncEnabled)
+				.onChange(async (value: boolean) => {
+					activeProfile.scheduledSyncEnabled = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}))
+			.addButton(button => button
+				.setButtonText('立即同步一次')
+				.setCta()
+				.onClick(async () => {
+					await this.plugin.runScheduledBitableProfileSync(activeProfile.id, 'manual', true);
+				}));
+
+		if (activeProfile.scheduledSyncEnabled) {
+			new Setting(containerEl)
+				.setName('同步间隔（分钟）')
+				.setDesc('最小 5 分钟，默认 30 分钟。')
+				.addText(text => text
+					.setPlaceholder('30')
+					.setValue(String(activeProfile.scheduledSyncIntervalMinutes || 30))
+					.onChange(async (value: string) => {
+						const parsed = Number(value);
+						activeProfile.scheduledSyncIntervalMinutes = Number.isFinite(parsed)
+							? Math.max(5, Math.min(24 * 60, Math.round(parsed)))
+							: 30;
+						await this.plugin.saveSettings();
+					}));
+
+			new Setting(containerEl)
+				.setName('启动后执行一次')
+				.setDesc('Obsidian 启动约 15 秒后自动跑一次该任务表同步。')
+				.addToggle(toggle => toggle
+					.setValue(!!activeProfile.scheduledSyncRunOnStartup)
+					.onChange(async (value: boolean) => {
+						activeProfile.scheduledSyncRunOnStartup = value;
+						await this.plugin.saveSettings();
+					}));
+		}
+
+		containerEl.createEl('h4', { text: '字段映射' });
+		this.renderProfileTableAssistant(containerEl, activeProfile);
+		this.renderProfileFieldMappingHint(containerEl, activeProfile);
+		this.renderProfileFieldMappingAssistant(containerEl, activeProfile);
 	}
 
-	private renderBitableFieldMappingAssistant(containerEl: HTMLElement): void {
-		const panel = containerEl.createDiv({ cls: 'bitable-field-mapping-panel' });
-		const toolbar = panel.createDiv({ cls: 'bitable-field-mapping-toolbar' });
-		toolbar.createDiv({ text: '字段映射助手', cls: 'bitable-field-mapping-title' });
-		const actions = toolbar.createDiv({ cls: 'bitable-field-mapping-actions' });
-		const loadButton = actions.createEl('button', { text: '读取表格字段' });
-		const resetButton = actions.createEl('button', { text: '清空映射' });
-		const hint = panel.createDiv({ cls: 'bitable-field-mapping-hint' });
-
-		const parseMapping = (): Record<string, string> => {
-			const raw = String(this.plugin.settings.bitableFieldMapping || '').trim();
-			if (!raw) return {};
-			try {
-				const parsed = JSON.parse(raw);
-				if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-					return {};
-				}
-				return Object.fromEntries(
-					Object.entries(parsed)
-						.map(([key, value]) => [String(key || '').trim(), String(value || '').trim()])
-						.filter(([key, value]) => key && value)
-				);
-			} catch {
-				return {};
-			}
-		};
-
-		const saveMapping = async (mapping: Record<string, string>) => {
-			this.plugin.settings.bitableFieldMapping = Object.keys(mapping).length > 0
-				? JSON.stringify(mapping, null, 2)
-				: '';
-			await this.plugin.saveSettings();
-			this.display();
-		};
-
-		const currentFields = this.getCachedBitableFieldNames();
-		if (!currentFields.length) {
-			hint.setText('先点击“读取表格字段”，再用下拉框为 title、content、link 等逻辑字段选择对应的多维表格字段。');
-		} else {
-			this.renderBitableFieldMappingRows(panel, currentFields, parseMapping, saveMapping);
-			hint.setText(`已读取 ${currentFields.length} 个表格字段。`);
-		}
-
-		loadButton.onclick = async () => {
-			try {
-				if (!this.plugin.settings.bitableAppToken || !this.plugin.settings.bitableTableId) {
-					new Notice('❌ 请先填写 Bitable App Token 和 Table ID');
-					return;
-				}
-				loadButton.disabled = true;
-				loadButton.textContent = '读取中...';
-				const result = await this.plugin.feishuApi.getBitableTableFields(
-					this.plugin.settings.bitableAppToken,
-					this.plugin.settings.bitableTableId
-				);
-				if (!result.success || !result.fields) {
-					new Notice(`❌ 读取字段失败：${result.error || '未知错误'}`);
-					return;
-				}
-				const names = result.fields.map((field) => field.name).filter((name) => !!name);
-				this.setCachedBitableFieldNames(names);
-				await this.plugin.saveSettings();
-				new Notice(`✅ 已读取 ${names.length} 个表格字段`);
-				this.display();
-			} catch (error) {
-				new Notice(`❌ 读取字段失败：${(error as Error).message}`);
-			} finally {
-				loadButton.disabled = false;
-				loadButton.textContent = '读取表格字段';
-			}
-		};
-
-		resetButton.onclick = async () => {
-			await saveMapping({});
-		};
-	}
-
-	private renderBitableFieldMappingRows(
-		containerEl: HTMLElement,
-		fieldNames: string[],
-		parseMapping: () => Record<string, string>,
-		saveMapping: (mapping: Record<string, string>) => Promise<void>
-	): void {
-		const logicalFields = [
+	private getLegacyBitableLogicalFields(): Array<[string, string]> {
+		return [
 			['title', '标题'],
 			['content', '正文'],
 			['link', '飞书链接'],
@@ -908,6 +1105,271 @@ export class FeishuSettingTab extends PluginSettingTab {
 			['value', '本地路径'],
 			['recordId', '记录 ID']
 		];
+	}
+
+	private getProfileLogicalFields(): Array<[string, string]> {
+		return [
+			['title', '标题'],
+			['body', '受控正文'],
+			['stage', 'stage'],
+			['status', 'status'],
+			['ai_scope', 'ai_scope'],
+			['owner', 'owner'],
+			['project', 'project'],
+			['source', 'source'],
+			['related', 'related'],
+			['next_action', 'next_action'],
+			['review_required', 'review_required'],
+			['priority', 'feishu_priority'],
+			['category', 'feishu_category']
+		];
+	}
+
+	private parseSingleValueFieldMapping(mapping: Record<string, any> | undefined | null): Record<string, string> {
+		if (!mapping || typeof mapping !== 'object') {
+			return {};
+		}
+		return Object.fromEntries(
+			Object.entries(mapping)
+				.map(([key, value]) => {
+					if (Array.isArray(value)) {
+						return [String(key || '').trim(), String(value[0] || '').trim()];
+					}
+					return [String(key || '').trim(), String(value || '').trim()];
+				})
+				.filter(([key, value]) => key && value)
+		);
+	}
+
+	private getLegacyBitableUiBinding(): BitableUiBinding {
+		const parseMapping = (): Record<string, string> => {
+			const raw = String(this.plugin.settings.bitableFieldMapping || '').trim();
+			if (!raw) return {};
+			try {
+				const parsed = JSON.parse(raw);
+				if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+					return {};
+				}
+				return this.parseSingleValueFieldMapping(parsed);
+			} catch {
+				return {};
+			}
+		};
+		return {
+			getAppToken: () => String(this.plugin.settings.bitableAppToken || '').trim(),
+			getTableId: () => String(this.plugin.settings.bitableTableId || '').trim(),
+			setTableId: (value: string) => {
+				this.plugin.settings.bitableTableId = value;
+				this.plugin.settings.bitableFieldNamesCache = [];
+			},
+			getTableOptions: () => this.getCachedBitableTableOptions(),
+			setTableOptions: (tables: BitableTableOption[]) => {
+				this.setCachedBitableTableOptions(tables);
+			},
+			getFieldNames: () => this.getCachedBitableFieldNames(),
+			setFieldNames: (names: string[]) => {
+				this.setCachedBitableFieldNames(names);
+			},
+			parseMapping,
+			saveMapping: async (mapping: Record<string, string>) => {
+				this.plugin.settings.bitableFieldMapping = Object.keys(mapping).length > 0
+					? JSON.stringify(mapping, null, 2)
+					: '';
+				await this.plugin.saveSettings();
+				this.display();
+			},
+			logicalFields: this.getLegacyBitableLogicalFields(),
+			defaultHint: '当前使用默认字段名：title、content、status、link、created、updated、tags、excerpt、author、aliases、slug、folder、value、recordId。',
+			onChange: async () => {
+				await this.plugin.saveSettings();
+				this.display();
+			}
+		};
+	}
+
+	private getProfileBitableUiBinding(profile: BitableSyncProfile): BitableUiBinding {
+		return {
+			getAppToken: () => String(profile.appToken || '').trim(),
+			getTableId: () => String(profile.tableId || '').trim(),
+			setTableId: (value: string) => {
+				profile.tableId = value;
+				profile.fieldNamesCache = [];
+			},
+			getTableOptions: () => Array.isArray(profile.tableOptionsCache) ? profile.tableOptionsCache : [],
+			setTableOptions: (tables: BitableTableOption[]) => {
+				profile.tableOptionsCache = tables;
+			},
+			getFieldNames: () => Array.isArray(profile.fieldNamesCache) ? profile.fieldNamesCache : [],
+			setFieldNames: (names: string[]) => {
+				profile.fieldNamesCache = names;
+			},
+			parseMapping: () => this.parseSingleValueFieldMapping(profile.fieldMapping),
+			saveMapping: async (mapping: Record<string, string>) => {
+				profile.fieldMapping = mapping;
+				await this.plugin.saveSettings();
+				this.display();
+			},
+			logicalFields: this.getProfileLogicalFields(),
+			defaultHint: '将任务字段映射到飞书表字段；frontmatter 与受控正文都通过这里选择对应列。',
+			onChange: async () => {
+				await this.plugin.saveSettings();
+				this.display();
+			}
+		};
+	}
+
+	private renderSharedBitableTableAssistant(containerEl: HTMLElement, binding: BitableUiBinding): void {
+		const panel = containerEl.createDiv({ cls: 'bitable-field-mapping-panel' });
+		const toolbar = panel.createDiv({ cls: 'bitable-field-mapping-toolbar' });
+		toolbar.createDiv({ text: '数据表选择助手', cls: 'bitable-field-mapping-title' });
+		const actions = toolbar.createDiv({ cls: 'bitable-field-mapping-actions' });
+		const loadButton = actions.createEl('button', { text: '读取数据表' });
+		const hint = panel.createDiv({ cls: 'bitable-field-mapping-hint' });
+		const tables = binding.getTableOptions();
+		const currentTableId = binding.getTableId();
+
+		if (!tables.length) {
+			hint.setText('先填写或粘贴 App Token，再点击“读取数据表”。如果读取失败，仍可手动填写 Table ID。');
+		} else {
+			const grid = panel.createDiv({ cls: 'bitable-field-mapping-grid' });
+			grid.createDiv({ text: '选择数据表', cls: 'bitable-field-mapping-label' });
+			const select = grid.createEl('select', { cls: 'bitable-field-mapping-select' });
+			select.createEl('option', { text: '保留手动填写的 Table ID', value: '' });
+			for (const option of tables) {
+				const label = option.name ? `${option.name} (${option.tableId})` : option.tableId;
+				select.createEl('option', { text: label, value: option.tableId });
+			}
+			if (currentTableId && tables.some((option) => option.tableId === currentTableId)) {
+				select.value = currentTableId;
+			}
+			select.addEventListener('change', async () => {
+				const next = String(select.value || '').trim();
+				if (next && next !== binding.getTableId()) {
+					binding.setTableId(next);
+					await binding.onChange();
+				}
+			});
+			hint.setText(`已读取 ${tables.length} 张数据表${currentTableId ? `；当前 Table ID：${currentTableId}` : ''}`);
+		}
+
+		loadButton.onclick = async () => {
+			try {
+				if (!binding.getAppToken()) {
+					new Notice('❌ 请先填写 Bitable App Token');
+					return;
+				}
+				loadButton.disabled = true;
+				loadButton.textContent = '读取中...';
+				const result = await this.plugin.feishuApi.getBitableTables(binding.getAppToken());
+				if (!result.success || !result.tables) {
+					new Notice(`❌ 读取数据表失败：${result.error || '未知错误'}`);
+					return;
+				}
+				binding.setTableOptions(result.tables);
+				if (!binding.getTableId() && result.tables.length === 1) {
+					binding.setTableId(result.tables[0].tableId);
+				}
+				await binding.onChange();
+				new Notice(`✅ 已读取 ${result.tables.length} 张数据表`);
+			} catch (error) {
+				new Notice(`❌ 读取数据表失败：${(error as Error).message}`);
+			} finally {
+				loadButton.disabled = false;
+				loadButton.textContent = '读取数据表';
+			}
+		};
+	}
+
+	private renderSharedBitableFieldMappingHint(containerEl: HTMLElement, binding: BitableUiBinding): void {
+		const mapping = binding.parseMapping();
+		const hint = containerEl.createDiv({ cls: 'setting-item-description' });
+		hint.style.marginTop = '-8px';
+		hint.style.marginBottom = '10px';
+		if (!Object.keys(mapping).length) {
+			hint.setText(binding.defaultHint);
+			return;
+		}
+		hint.setText(`当前字段映射有效：${Object.keys(mapping).length} 项。`);
+	}
+
+	private renderSharedBitableFieldMappingAssistant(containerEl: HTMLElement, binding: BitableUiBinding): void {
+		const panel = containerEl.createDiv({ cls: 'bitable-field-mapping-panel' });
+		const toolbar = panel.createDiv({ cls: 'bitable-field-mapping-toolbar' });
+		toolbar.createDiv({ text: '字段映射助手', cls: 'bitable-field-mapping-title' });
+		const actions = toolbar.createDiv({ cls: 'bitable-field-mapping-actions' });
+		const loadButton = actions.createEl('button', { text: '读取表格字段' });
+		const resetButton = actions.createEl('button', { text: '清空映射' });
+		const hint = panel.createDiv({ cls: 'bitable-field-mapping-hint' });
+		const currentFields = binding.getFieldNames();
+
+		if (!currentFields.length) {
+			hint.setText('先点击“读取表格字段”，再用下拉框为逻辑字段选择对应的飞书表字段。');
+		} else {
+			this.renderBitableFieldMappingRows(panel, currentFields, binding.parseMapping, binding.saveMapping, binding.logicalFields);
+			hint.setText(`已读取 ${currentFields.length} 个表格字段。`);
+		}
+
+		loadButton.onclick = async () => {
+			try {
+				if (!binding.getAppToken() || !binding.getTableId()) {
+					new Notice('❌ 请先填写 Bitable App Token 和 Table ID');
+					return;
+				}
+				loadButton.disabled = true;
+				loadButton.textContent = '读取中...';
+				const result = await this.plugin.feishuApi.getBitableTableFields(binding.getAppToken(), binding.getTableId());
+				if (!result.success || !result.fields) {
+					new Notice(`❌ 读取字段失败：${result.error || '未知错误'}`);
+					return;
+				}
+				const names = result.fields.map((field) => field.name).filter((name) => !!name);
+				binding.setFieldNames(names);
+				await binding.onChange();
+				new Notice(`✅ 已读取 ${names.length} 个表格字段`);
+			} catch (error) {
+				new Notice(`❌ 读取字段失败：${(error as Error).message}`);
+			} finally {
+				loadButton.disabled = false;
+				loadButton.textContent = '读取表格字段';
+			}
+		};
+
+		resetButton.onclick = async () => {
+			await binding.saveMapping({});
+		};
+	}
+
+	private renderProfileTableAssistant(containerEl: HTMLElement, profile: BitableSyncProfile): void {
+		this.renderSharedBitableTableAssistant(containerEl, this.getProfileBitableUiBinding(profile));
+	}
+
+	private renderProfileFieldMappingHint(containerEl: HTMLElement, profile: BitableSyncProfile): void {
+		this.renderSharedBitableFieldMappingHint(containerEl, this.getProfileBitableUiBinding(profile));
+	}
+
+	private renderProfileFieldMappingAssistant(containerEl: HTMLElement, profile: BitableSyncProfile): void {
+		this.renderSharedBitableFieldMappingAssistant(containerEl, this.getProfileBitableUiBinding(profile));
+	}
+
+	private renderBitableTableAssistant(containerEl: HTMLElement): void {
+		this.renderSharedBitableTableAssistant(containerEl, this.getLegacyBitableUiBinding());
+	}
+
+	private renderBitableFieldMappingHint(containerEl: HTMLElement): void {
+		this.renderSharedBitableFieldMappingHint(containerEl, this.getLegacyBitableUiBinding());
+	}
+
+	private renderBitableFieldMappingAssistant(containerEl: HTMLElement): void {
+		this.renderSharedBitableFieldMappingAssistant(containerEl, this.getLegacyBitableUiBinding());
+	}
+
+	private renderBitableFieldMappingRows(
+		containerEl: HTMLElement,
+		fieldNames: string[],
+		parseMapping: () => Record<string, string>,
+		saveMapping: (mapping: Record<string, string>) => Promise<void>,
+		logicalFields: Array<[string, string]> = this.getLegacyBitableLogicalFields()
+	): void {
 		const grid = containerEl.createDiv({ cls: 'bitable-field-mapping-grid' });
 		const mapping = parseMapping();
 		for (const [logicalKey, label] of logicalFields) {
@@ -934,6 +1396,16 @@ export class FeishuSettingTab extends PluginSettingTab {
 	private getCachedBitableFieldNames(): string[] {
 		const raw = this.plugin.settings.bitableFieldNamesCache;
 		return Array.isArray(raw) ? raw.map((name) => String(name)).filter((name) => !!name) : [];
+	}
+
+	private getBitableProfilesForSettings(): BitableSyncProfile[] {
+		const raw = this.plugin.settings.bitableProfiles;
+		const profiles = Array.isArray(raw) ? raw : [];
+		this.plugin.settings.bitableProfiles = profiles;
+		if (!this.plugin.settings.activeBitableProfileId || !profiles.some((profile) => profile.id === this.plugin.settings.activeBitableProfileId)) {
+			this.plugin.settings.activeBitableProfileId = profiles[0]?.id || '';
+		}
+		return profiles;
 	}
 
 	private getCachedBitableTableOptions(): BitableTableOption[] {
@@ -999,104 +1471,98 @@ export class FeishuSettingTab extends PluginSettingTab {
 
 	private renderHistoryPanel(containerEl: HTMLElement): void {
 		containerEl.createEl('h3', { text: '已上传文档列表' });
-		const history = Array.isArray(this.plugin.settings.uploadHistory) ? this.plugin.settings.uploadHistory : [];
-		if (history.length === 0) {
+		const entries = this.buildHistoryEntries();
+		const states: SyncStateItem[] = Array.isArray(this.plugin.settings.syncStates) ? this.plugin.settings.syncStates : [];
+		if (entries.length === 0) {
 			containerEl.createEl('p', { text: '暂无上传记录', cls: 'upload-history-empty' });
 			return;
 		}
+
+		this.renderHistorySearch(containerEl);
+		const counts = getSyncStatusCounts(states);
+		counts.localDeleted = entries.filter((entry) => this.isLocalDeletedEntry(entry)).length;
+		const filteredEntries = this.filterHistoryEntries(entries);
+		const visibleStates = filteredEntries
+			.map((entry) => entry.state)
+			.filter((state): state is SyncStateItem => !!state);
+
+		const overview = new Setting(containerEl)
+			.setName('文档与同步概览')
+			.setDesc(
+				states.length > 0
+					? `共 ${entries.length} 条文档记录，其中同步诊断 ${states.length} 条，需关注 ${counts.problem} 条，冲突 ${counts.conflict} 条，错误 ${counts.error} 条，本地已删除 ${counts.localDeleted} 条。`
+					: `共 ${entries.length} 条文档记录。上传或执行同步后，这里会显示同步诊断。`
+			);
+		if (states.length > 0) {
+			overview.addButton((btn) => {
+				btn
+					.setButtonText('清空同步诊断')
+					.setTooltip('只清空诊断状态，不删除文档记录')
+					.setWarning()
+					.onClick(async () => {
+						this.plugin.settings.syncStates = [];
+						this.clearHistorySelection();
+						await this.plugin.saveSettings();
+						new Notice('✅ 已清空同步诊断，文档记录保留');
+						this.display();
+					});
+			});
+		}
+
+		this.renderHistoryBatchToolbar(containerEl, filteredEntries);
+		this.renderHistoryStatusToolbar(containerEl, counts, filteredEntries.length, entries.length, visibleStates);
+		const list = containerEl.createDiv('upload-history-container');
+		if (filteredEntries.length === 0) {
+			list.createEl('p', {
+				text: this.historySearchQuery.trim() ? '没有找到匹配的文档或同步记录' : '当前筛选下没有文档记录',
+				cls: 'upload-history-empty'
+			});
+			return;
+		}
+		filteredEntries.forEach((entry) => {
+			this.renderHistoryItem(list, entry);
+		});
+	}
+
+	private renderHistorySearch(containerEl: HTMLElement): void {
 		const searchContainer = containerEl.createDiv({ cls: 'share-search-container' });
 		const searchInput = searchContainer.createEl('input', {
 			type: 'text',
-			placeholder: '搜索标题或链接...',
+			placeholder: '搜索标题、链接、错误或同步细节...',
 			cls: 'share-search-input'
 		});
 		searchInput.value = this.historySearchQuery;
 		searchInput.addEventListener('input', (e: Event) => {
 			this.historySearchQuery = (e.target as HTMLInputElement).value;
-			this.display();
-		});
-		const q = (this.historySearchQuery || '').trim().toLowerCase();
-		const items = q
-			? history.filter((h) => (h.title || '').toLowerCase().includes(q) || (h.url || '').toLowerCase().includes(q) || (h.docToken || '').toLowerCase().includes(q))
-			: history;
-		if (items.length === 0) {
-			containerEl.createEl('p', { text: '没有找到匹配的记录', cls: 'upload-history-empty' });
-			return;
-		}
-
-		this.renderHistoryBatchToolbar(containerEl, items);
-		const list = containerEl.createDiv('upload-history-container');
-		items.forEach((item) => {
-			this.renderHistoryItem(list, item);
-		});
-	}
-
-	private renderSyncStatusPanel(containerEl: HTMLElement): void {
-		containerEl.createEl('h3', { text: '同步状态' });
-		const states: SyncStateItem[] = Array.isArray(this.plugin.settings.syncStates) ? this.plugin.settings.syncStates : [];
-		if (states.length === 0) {
-			containerEl.createEl('p', { text: '暂无同步状态记录', cls: 'upload-history-empty' });
-			return;
-		}
-
-		const counts = getSyncStatusCounts(states);
-		this.renderSyncStatusSearch(containerEl);
-		const filteredStates = searchSyncStates(filterSyncStates(states, this.syncStatusFilter), this.syncStatusSearchQuery);
-
-		new Setting(containerEl)
-			.setName('状态记录')
-			.setDesc(`共 ${states.length} 条，需关注 ${counts.problem} 条，冲突 ${counts.conflict} 条，错误 ${counts.error} 条。用于判断本地/飞书是否有未同步改动。`)
-			.addButton(btn => {
-				btn
-					.setButtonText('清空状态')
-					.setWarning()
-					.onClick(async () => {
-						this.plugin.settings.syncStates = [];
-						await this.plugin.saveSettings();
-						new Notice('✅ 已清空同步状态');
-						this.display();
-					});
-			});
-
-		this.renderSyncStatusToolbar(containerEl, counts, filteredStates, states.length);
-		const list = containerEl.createDiv('upload-history-container');
-		const sorted = sortSyncStates(filteredStates);
-		if (sorted.length === 0) {
-			list.createEl('p', { text: this.syncStatusSearchQuery.trim() ? '没有找到匹配的同步状态记录' : '当前筛选下没有同步状态记录', cls: 'upload-history-empty' });
-			return;
-		}
-		sorted.forEach((state) => this.renderSyncStatusItem(list, state));
-	}
-
-	private renderSyncStatusSearch(containerEl: HTMLElement): void {
-		const searchContainer = containerEl.createDiv({ cls: 'share-search-container' });
-		const searchInput = searchContainer.createEl('input', {
-			type: 'text',
-			placeholder: '搜索文件、链接、错误、建议或状态细节...',
-			cls: 'share-search-input'
-		});
-		searchInput.value = this.syncStatusSearchQuery;
-		searchInput.addEventListener('input', (e: Event) => {
-			this.syncStatusSearchQuery = (e.target as HTMLInputElement).value;
+			this.clearHistorySelection();
 			this.display();
 		});
 	}
 
-	private renderSyncStatusToolbar(containerEl: HTMLElement, counts: SyncStatusCounts, visibleStates: SyncStateItem[], totalCount: number): void {
+	private renderHistoryStatusToolbar(
+		containerEl: HTMLElement,
+		counts: SyncStatusCounts,
+		visibleEntryCount: number,
+		totalEntryCount: number,
+		visibleStates: SyncStateItem[]
+	): void {
 		const toolbar = containerEl.createDiv({ cls: 'sync-status-toolbar' });
 		const filters = toolbar.createDiv({ cls: 'sync-status-filter-group' });
-		const options: Array<{ key: SyncStatusFilter; label: string }> = [
-			{ key: 'all', label: `全部 ${counts.all}` },
-			{ key: 'problem', label: `需关注 ${counts.problem}` },
-			{ key: 'conflict', label: `冲突 ${counts.conflict}` },
-			{ key: 'error', label: `错误 ${counts.error}` },
-			{ key: 'synced', label: `已同步 ${counts.synced}` }
-		];
+            const options: Array<{ key: SyncStatusFilter; label: string; description: string }> = [
+                { key: 'all', label: `全部 ${totalEntryCount}`, description: '查看当前列表中的全部记录。' },
+                { key: 'problem', label: `需关注 ${counts.problem}`, description: '查看需要优先处理的记录总入口。' },
+                { key: 'conflict', label: `冲突 ${counts.conflict}`, description: '查看本地和远端都发生变化，需要人工决策的记录。' },
+                { key: 'error', label: `错误 ${counts.error}`, description: '查看同步失败、需要重试或排查的记录。' },
+                { key: 'localDeleted', label: `本地已删除 ${counts.localDeleted}`, description: '查看本地文件已删除，通常需要清理本地映射的记录。' },
+                { key: 'remoteDeleted', label: `远端已删除 ${counts.remoteDeleted}`, description: '查看远端记录已删除、本地文件暂时保留的僵尸记录。' },
+                { key: 'synced', label: `已同步 ${counts.synced}`, description: '只看当前状态健康的已同步记录。' }
+            ];
 		options.forEach((option) => {
 			const btn = filters.createEl('button', {
 				text: option.label,
 				cls: 'sync-status-filter-btn'
 			});
+                btn.setAttribute('title', option.description);
 			if (this.syncStatusFilter === option.key) {
 				btn.addClass('is-active');
 			}
@@ -1105,6 +1571,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 			}
 			btn.addEventListener('click', () => {
 				this.syncStatusFilter = option.key;
+				this.clearHistorySelection();
 				this.display();
 			});
 		});
@@ -1120,9 +1587,174 @@ export class FeishuSettingTab extends PluginSettingTab {
 			await this.smartSyncVisibleStates(syncableStates);
 		});
 		toolbar.createEl('span', {
-			text: `当前显示 ${visibleStates.length}/${totalCount} 条`,
+			text: `当前显示 ${visibleEntryCount}/${totalEntryCount} 条文档`,
 			cls: 'sync-status-summary'
 		});
+	}
+
+	private buildHistoryEntries(): HistoryListEntry[] {
+		const history = Array.isArray(this.plugin.settings.uploadHistory) ? this.plugin.settings.uploadHistory : [];
+		const states: SyncStateItem[] = Array.isArray(this.plugin.settings.syncStates) ? this.plugin.settings.syncStates : [];
+		const entries: HistoryListEntry[] = [];
+		const lookup = new Map<string, HistoryListEntry>();
+		const upsertEntry = (historyItem?: UploadHistoryItem, stateItem?: SyncStateItem) => {
+			const candidateKeys = this.getHistoryEntryLookupKeys(historyItem, stateItem);
+			let entry = candidateKeys
+				.map((key) => lookup.get(key))
+				.find((item): item is HistoryListEntry => !!item);
+			if (!entry) {
+				entry = this.createHistoryEntry(candidateKeys[0] || `history:${entries.length + 1}`);
+				entries.push(entry);
+			}
+			if (historyItem) {
+				entry.history = historyItem;
+			}
+			if (stateItem) {
+				entry.state = stateItem;
+			}
+			this.syncHistoryEntry(entry);
+			this.getHistoryEntryLookupKeys(entry.history, entry.state).forEach((key) => lookup.set(key, entry!));
+		};
+
+		history.forEach((item) => upsertEntry(item));
+		sortSyncStates(states).forEach((state) => upsertEntry(undefined, state));
+		return entries;
+	}
+
+	private createHistoryEntry(key: string): HistoryListEntry {
+		return {
+			key,
+			filePath: '',
+			title: '未命名文档',
+			docToken: '',
+			url: '',
+			bitableRecordId: ''
+		};
+	}
+
+	private syncHistoryEntry(entry: HistoryListEntry): void {
+		const history = entry.history;
+		const state = entry.state;
+		entry.filePath = String(history?.filePath || state?.filePath || '').trim();
+		entry.title = String(history?.title || state?.title || state?.filePath || history?.docToken || state?.docToken || '未命名文档').trim();
+		entry.docToken = String(history?.docToken || state?.docToken || '').trim();
+		entry.url = String(history?.url || state?.url || (entry.docToken ? `https://feishu.cn/docx/${entry.docToken}` : '')).trim();
+		entry.bitableRecordId = String(history?.bitableRecordId || state?.bitableRecordId || '').trim();
+		entry.updatedAt = history?.updatedAt || state?.lastSyncedAt;
+		entry.localDeletedAt = history?.localDeletedAt;
+	}
+
+	private getHistoryEntryLookupKeys(history?: UploadHistoryItem, state?: SyncStateItem): string[] {
+		const keys: string[] = [];
+		const filePath = String(history?.filePath || state?.filePath || '').trim();
+		const docToken = String(history?.docToken || state?.docToken || '').trim();
+		const bitableRecordId = String(history?.bitableRecordId || state?.bitableRecordId || '').trim();
+		if (filePath) {
+			keys.push(`file:${filePath}`);
+		}
+		if (docToken) {
+			keys.push(`doc:${docToken}`);
+		}
+		if (bitableRecordId) {
+			keys.push(`bitable:${bitableRecordId}`);
+		}
+		return keys;
+	}
+
+	private getHistoryEntrySelectionKey(entry: HistoryListEntry): string {
+		return String(entry.key || entry.filePath || entry.docToken || entry.bitableRecordId || '').trim();
+	}
+
+	private canSetPermissionsForEntry(entry: HistoryListEntry): boolean {
+		return !!String(entry.docToken || '').trim();
+	}
+
+	private canDeleteHistoryEntry(entry: HistoryListEntry): boolean {
+		return !!String(entry.filePath || '').trim()
+			|| !!String(entry.docToken || '').trim()
+			|| !!String(entry.bitableRecordId || '').trim();
+	}
+
+	private canClearHistoryRecordOnly(entry: HistoryListEntry): boolean {
+		return !!String(entry.filePath || '').trim()
+			&& (this.isLocalDeletedEntry(entry) || isRemoteMissingState(entry.state));
+	}
+
+	private getSelectableHistoryEntries(entries: HistoryListEntry[]): HistoryListEntry[] {
+		return entries.filter((entry) => this.canDeleteHistoryEntry(entry));
+	}
+
+	private getSelectedHistoryEntriesWithin(entries: HistoryListEntry[]): HistoryListEntry[] {
+		return this.getSelectableHistoryEntries(entries)
+			.filter((entry) => this.selectedHistoryEntryKeys.has(this.getHistoryEntrySelectionKey(entry)));
+	}
+
+	private clearHistorySelection(entries?: Array<HistoryListEntry | string>): void {
+		if (!entries) {
+			this.selectedHistoryEntryKeys.clear();
+			return;
+		}
+		entries.forEach((entry) => {
+			const key = typeof entry === 'string'
+				? String(entry || '').trim()
+				: this.getHistoryEntrySelectionKey(entry);
+			if (key) {
+				this.selectedHistoryEntryKeys.delete(key);
+			}
+		});
+	}
+
+	private filterHistoryEntries(entries: HistoryListEntry[]): HistoryListEntry[] {
+		const query = String(this.historySearchQuery || '').trim().toLowerCase();
+		return entries.filter((entry) => this.matchesHistoryEntryFilter(entry) && this.matchesHistoryEntrySearch(entry, query));
+	}
+
+	private isLocalDeletedEntry(entry: HistoryListEntry): boolean {
+		return !!entry.localDeletedAt || !!entry.state?.localMissing;
+	}
+
+	private matchesHistoryEntryFilter(entry: HistoryListEntry): boolean {
+		if (this.syncStatusFilter === 'all') {
+			return true;
+		}
+		if (this.syncStatusFilter === 'localDeleted') {
+			return this.isLocalDeletedEntry(entry);
+		}
+		if (!entry.state) {
+			return false;
+		}
+		if (this.syncStatusFilter === 'remoteDeleted') {
+			return isRemoteMissingState(entry.state);
+		}
+		const view = buildSyncStatusView(entry.state);
+		if (this.syncStatusFilter === 'problem') {
+			return view.shouldAutoSync;
+		}
+		return view.status === this.syncStatusFilter;
+	}
+
+	private matchesHistoryEntrySearch(entry: HistoryListEntry, query: string): boolean {
+		if (!query) {
+			return true;
+		}
+		const view = entry.state ? buildSyncStatusView(entry.state) : null;
+		return [
+			entry.title,
+			entry.url,
+			entry.docToken,
+			entry.filePath,
+			entry.bitableRecordId,
+			view?.summary,
+			view?.recommendation.label,
+			view?.recommendation.action,
+			view?.detailText,
+			view ? formatSyncStatus(view.status) : '未诊断',
+			entry.state?.lastError
+		]
+			.filter((part) => part !== undefined && part !== null)
+			.map((part) => String(part).toLowerCase())
+			.join('\n')
+			.includes(query);
 	}
 
 	private async smartSyncVisibleStates(states: SyncStateItem[]): Promise<void> {
@@ -1164,39 +1796,6 @@ export class FeishuSettingTab extends PluginSettingTab {
 		}
 	}
 
-	private renderSyncStatusItem(containerEl: HTMLElement, state: SyncStateItem): void {
-		const view = buildSyncStatusView(state);
-		const row = containerEl.createDiv('upload-history-item');
-		const content = row.createDiv('upload-history-content');
-		const header = content.createDiv('upload-history-header');
-		header.createDiv({ text: view.title, cls: 'upload-history-title' });
-		const meta = header.createDiv('upload-history-meta');
-		const badge = meta.createDiv({ text: formatSyncStatus(view.status), cls: `sync-status-badge ${view.status}` });
-		badge.setAttribute('title', view.status);
-		if (view.lastSyncedAt) {
-			meta.createDiv({ text: new Date(view.lastSyncedAt).toLocaleString(), cls: 'upload-history-time' });
-		}
-		const actions = meta.createDiv('upload-history-actions');
-		this.renderSyncStatusActions(actions, state);
-
-		content.createDiv({ text: view.summary, cls: 'sync-status-summary-line' });
-		const recommendation = content.createDiv({ cls: `sync-status-recommendation ${view.recommendation.level}` });
-		recommendation.createEl('span', { text: view.recommendation.label, cls: 'sync-status-recommendation-label' });
-		recommendation.createEl('span', { text: view.recommendation.action });
-		const detailRow = content.createDiv({ cls: 'sync-status-detail' });
-		view.detailParts.forEach((part) => {
-			const chip = detailRow.createDiv({ cls: `sync-status-detail-chip ${part.group}` });
-			chip.createEl('span', { text: part.label, cls: 'sync-status-detail-label' });
-			chip.createEl('span', { text: part.value });
-		});
-
-		if (view.url) {
-			const linkRow = content.createDiv('upload-history-link-row');
-			const linkEl = linkRow.createEl('a', { text: view.url, href: view.url, cls: 'upload-history-link' });
-			linkEl.setAttribute('target', '_blank');
-		}
-	}
-
 	private renderSyncStatusActions(containerEl: HTMLElement, state: SyncStateItem): void {
 		const filePath = state && state.filePath ? String(state.filePath) : '';
 		const view = buildSyncStatusView(state);
@@ -1229,95 +1828,152 @@ export class FeishuSettingTab extends PluginSettingTab {
 		makeAction('📊', '从多维表格更新本地', async () => {
 			await this.plugin.pullFromBitableByPath(filePath);
 		}, !view.canSync);
-		if (state.localMissing) {
-			makeAction('✕', '清理本地映射（不删除飞书内容）', async () => {
-				if (!confirm(`确定清理「${state.title || state.filePath}」的本地同步映射吗？\n\n这不会删除飞书文档或多维表格记录。`)) {
-					return;
-				}
-				await this.plugin.removeMappingByFilePath(filePath);
-				new Notice('✅ 已清理本地同步映射');
-			});
-		}
 	}
 
-	private renderHistoryBatchToolbar(containerEl: HTMLElement, items: any[]): void {
+	private renderHistoryBatchToolbar(containerEl: HTMLElement, items: HistoryListEntry[]): void {
 		const toolbar = containerEl.createDiv({ cls: 'share-batch-toolbar' });
 		const leftActions = toolbar.createDiv({ cls: 'share-batch-left' });
 		const checkbox = leftActions.createEl('input', {
 			type: 'checkbox',
 			cls: 'share-select-all'
-		});
-		const allDocTokens = items.map((it) => it && it.docToken).filter((t) => !!t);
-		checkbox.checked = allDocTokens.length > 0 && allDocTokens.every((t) => this.selectedHistoryDocTokens.has(String(t)));
+		}) as HTMLInputElement;
+		const visibleSelectableEntries = this.getSelectableHistoryEntries(items);
+		const visibleSelectedEntries = this.getSelectedHistoryEntriesWithin(items);
+		checkbox.checked = visibleSelectableEntries.length > 0 && visibleSelectedEntries.length === visibleSelectableEntries.length;
+		checkbox.indeterminate = visibleSelectedEntries.length > 0 && visibleSelectedEntries.length < visibleSelectableEntries.length;
 		checkbox.addEventListener('change', () => {
 			if (checkbox.checked) {
-				allDocTokens.forEach((t) => this.selectedHistoryDocTokens.add(String(t)));
+				visibleSelectableEntries.forEach((entry) => this.selectedHistoryEntryKeys.add(this.getHistoryEntrySelectionKey(entry)));
 			} else {
-				allDocTokens.forEach((t) => this.selectedHistoryDocTokens.delete(String(t)));
+				visibleSelectableEntries.forEach((entry) => this.selectedHistoryEntryKeys.delete(this.getHistoryEntrySelectionKey(entry)));
 			}
 			this.display();
 		});
-		leftActions.createEl('span', { text: `全选（已选 ${this.selectedHistoryDocTokens.size} 个）`, cls: 'share-select-label' });
+		leftActions.createEl('span', {
+			text: `全选（当前分组已选 ${visibleSelectedEntries.length}/${visibleSelectableEntries.length} 个）`,
+			cls: 'share-select-label'
+		});
 
-		if (this.selectedHistoryDocTokens.size > 0) {
+		if (visibleSelectedEntries.length > 0) {
 			const rightActions = toolbar.createDiv({ cls: 'share-batch-right' });
+			const permissionEntries = visibleSelectedEntries.filter((entry) => this.canSetPermissionsForEntry(entry));
+			const clearableEntries = visibleSelectedEntries.filter((entry) => this.canClearHistoryRecordOnly(entry));
+
 			const batchPermButton = rightActions.createEl('button', { text: '批量设置权限', cls: 'mod-cta' });
+			if (permissionEntries.length === 0) {
+				batchPermButton.disabled = true;
+				batchPermButton.title = '当前所选记录没有可设置权限的飞书文档';
+			}
 			batchPermButton.addEventListener('click', async () => {
-				await this.batchSetPermissions();
+				await this.batchSetPermissions(permissionEntries);
 			});
+
+			const batchClearButton = rightActions.createEl('button', { text: '批量清除记录' });
+			if (clearableEntries.length === 0) {
+				batchClearButton.disabled = true;
+				batchClearButton.title = '当前所选记录没有可只清除的本地记录';
+			}
+			batchClearButton.addEventListener('click', async () => {
+				await this.batchClearHistoryRecords(clearableEntries);
+			});
+
 			const batchDeleteButton = rightActions.createEl('button', { text: '批量删除', cls: 'mod-warning' });
 			batchDeleteButton.addEventListener('click', async () => {
-				await this.batchDeleteItems();
+				await this.batchDeleteItems(visibleSelectedEntries);
 			});
 		}
 	}
 
-	private renderHistoryItem(containerEl: HTMLElement, item: any): void {
+	private renderHistoryItem(containerEl: HTMLElement, item: HistoryListEntry): void {
 		const row = containerEl.createDiv('upload-history-item');
 		const checkbox = row.createEl('input', { type: 'checkbox', cls: 'share-item-checkbox' });
-		const token = item && item.docToken ? String(item.docToken) : '';
-		checkbox.checked = !!token && this.selectedHistoryDocTokens.has(token);
+		const token = item.docToken ? String(item.docToken) : '';
+		const selectionKey = this.getHistoryEntrySelectionKey(item);
+		const canSelect = this.canDeleteHistoryEntry(item);
+		const view = item.state ? buildSyncStatusView(item.state) : null;
+		const expanded = this.expandedHistoryEntries.has(item.key);
+		const url = item.url || (item.docToken ? `https://feishu.cn/docx/${item.docToken}` : '');
+		checkbox.checked = canSelect && this.selectedHistoryEntryKeys.has(selectionKey);
+		checkbox.disabled = !canSelect;
+		if (!canSelect) {
+			checkbox.setAttribute('title', '该条记录缺少可清理的映射信息，不能参与批量操作');
+		}
 		checkbox.addEventListener('change', () => {
-			if (!token) return;
+			if (!canSelect) return;
 			if (checkbox.checked) {
-				this.selectedHistoryDocTokens.add(token);
+				this.selectedHistoryEntryKeys.add(selectionKey);
 			} else {
-				this.selectedHistoryDocTokens.delete(token);
+				this.selectedHistoryEntryKeys.delete(selectionKey);
 			}
 			this.display();
 		});
-
 		const content = row.createDiv('upload-history-content');
 		const header = content.createDiv('upload-history-header');
 		header.createDiv({ text: item.title || item.filePath || item.docToken, cls: 'upload-history-title' });
 		const meta = header.createDiv('upload-history-meta');
+		const statusBadge = meta.createDiv({
+			text: view ? formatSyncStatus(view.status) : '未诊断',
+			cls: view ? `sync-status-badge ${view.status}` : 'sync-status-badge pending'
+		});
+		const toggleExpanded = () => {
+			if (expanded) {
+				this.expandedHistoryEntries.delete(item.key);
+			} else {
+				this.expandedHistoryEntries.add(item.key);
+			}
+			this.display();
+		};
+		statusBadge.setAttribute('title', view ? `${view.summary}（点击展开诊断）` : '当前还没有生成同步诊断记录（点击展开）');
+		statusBadge.style.cursor = 'pointer';
+		statusBadge.onclick = () => {
+			toggleExpanded();
+		};
 		if (item.localDeletedAt) {
 			const deletedBadge = meta.createDiv({ text: '本地已删除', cls: 'sync-status-badge error' });
 			deletedBadge.setAttribute('title', new Date(item.localDeletedAt).toLocaleString());
+		}
+		if (item.state && isRemoteMissingState(item.state)) {
+			const remoteDeletedBadge = meta.createDiv({ text: '远端已删除', cls: 'sync-status-badge error' });
+			remoteDeletedBadge.setAttribute('title', item.state.lastError || '远端记录已删除');
 		}
 		if (item.updatedAt) {
 			const t = new Date(item.updatedAt);
 			meta.createDiv({ text: `${t.toLocaleString()}`, cls: 'upload-history-time' });
 		}
 		const actions = meta.createDiv('upload-history-actions');
-		const url = item.url || (item.docToken ? `https://feishu.cn/docx/${item.docToken}` : '');
-		const linkRow = content.createDiv('upload-history-link-row');
-		const linkEl = linkRow.createEl('a', { text: url, href: url, cls: 'upload-history-link' });
-		linkEl.setAttribute('target', '_blank');
+		const makeHistoryAction = (
+			text: string,
+			title: string,
+			onClick: () => void | Promise<void>,
+			disabled = false
+		) => {
+			const btn = actions.createEl('span', { text, cls: 'upload-history-action-btn' });
+			btn.setAttribute('title', title);
+			if (disabled) {
+				btn.style.opacity = '0.35';
+				btn.style.cursor = 'not-allowed';
+				return;
+			}
+			btn.onclick = async () => {
+				try {
+					await onClick();
+				} catch (e) {
+					new Notice(`❌ 操作失败: ${(e as Error).message || String(e)}`);
+				}
+			};
+		};
 
-		const copyBtn = actions.createEl('span', { text: '📋', cls: 'upload-history-action-btn' });
-		copyBtn.setAttribute('title', '复制链接');
-		copyBtn.onclick = () => {
+		makeHistoryAction('📋', '复制链接', () => {
+			if (!url) {
+				return;
+			}
 			try {
 				navigator.clipboard.writeText(url);
 				new Notice('链接已复制到剪贴板');
 			} catch {
 			}
-		};
-
-		const permBtn = actions.createEl('span', { text: '⚙️', cls: 'upload-history-action-btn' });
-		permBtn.setAttribute('title', '设置权限');
-		permBtn.onclick = async () => {
+		}, !url);
+		makeHistoryAction('⚙️', '设置权限', async () => {
 			if (!token) {
 				new Notice('❌ docToken 缺失，无法设置权限');
 				return;
@@ -1347,57 +2003,96 @@ export class FeishuSettingTab extends PluginSettingTab {
 					this.display();
 				}
 			}).open();
-		};
-
-		const deleteBtn = actions.createEl('span', { text: '🗑️', cls: 'upload-history-action-btn' });
-		deleteBtn.setAttribute('title', '删除云端文档');
-		deleteBtn.onclick = async () => {
-			if (!token) {
-				new Notice('❌ docToken 缺失，无法删除文档');
-				return;
-			}
-			const confirmed = confirm('确定要删除该条记录对应的飞书云端文档吗？\n\n注意：此操作将删除飞书云端文档，并移除本地映射。');
+		}, !this.canSetPermissionsForEntry(item));
+		makeHistoryAction('🧹', '只清除记录（不删除远端）', async () => {
+			await this.clearHistoryRecordOnly(item);
+		}, !this.canClearHistoryRecordOnly(item));
+		makeHistoryAction('🗑️', '删除记录', async () => {
+			const confirmed = confirm('确定要删除这条记录吗？\n\n注意：能删除远端内容时会一并删除远端，并移除本地映射；删除后会从列表中消失。');
 			if (!confirmed) return;
 			try {
-				try {
-					await this.plugin.feishuApi.deleteDocument(token);
-				} catch (e) {
-					if (!this.isNotFoundError(e) && !this.isTokenInvalidDeleteError(e)) {
-						throw e;
-					}
-				}
-				await this.tryDeleteBitableForHistoryToken(token);
-				await this.deleteHistoryItem(token);
-				this.selectedHistoryDocTokens.delete(token);
+				await this.deleteHistoryEntry(item);
+				this.clearHistorySelection([item]);
+				this.expandedHistoryEntries.delete(item.key);
 				this.display();
-				new Notice('✅ 已移除映射');
+				new Notice('✅ 记录已删除');
 			} catch (e) {
 				import('./debug').then(({ Debug }) => Debug.error('Delete document failed:', e));
 				new Notice(`❌ 删除失败: ${(e as Error).message || String(e)}`);
 			}
+		}, !this.canDeleteHistoryEntry(item));
+		makeHistoryAction(expanded ? '▴' : '▾', expanded ? '收起同步诊断' : '展开同步诊断', () => {
+			toggleExpanded();
+		});
+
+		content.createDiv({
+			text: view
+				? view.summary
+				: '已记录云端映射，可展开查看同步诊断和同步操作。',
+			cls: 'sync-status-summary-line'
+		});
+		if (url) {
+			const linkRow = content.createDiv('upload-history-link-row');
+			const linkEl = linkRow.createEl('a', { text: url, href: url, cls: 'upload-history-link' });
+			linkEl.setAttribute('target', '_blank');
+		}
+		if (!expanded) {
+			return;
+		}
+
+		const diagnosticPanel = content.createDiv({ cls: 'history-diagnostic-panel' });
+		if (view && item.state) {
+			const recommendation = diagnosticPanel.createDiv({ cls: `sync-status-recommendation ${view.recommendation.level}` });
+			recommendation.createEl('span', { text: view.recommendation.label, cls: 'sync-status-recommendation-label' });
+			recommendation.createEl('span', { text: view.recommendation.action });
+			const diagnosticActions = diagnosticPanel.createDiv({ cls: 'history-diagnostic-actions' });
+			this.renderSyncStatusActions(diagnosticActions, item.state);
+			const detailRow = diagnosticPanel.createDiv({ cls: 'sync-status-detail' });
+			view.detailParts.forEach((part) => {
+				const chip = detailRow.createDiv({ cls: `sync-status-detail-chip ${part.group}` });
+				chip.createEl('span', { text: part.label, cls: 'sync-status-detail-label' });
+				chip.createEl('span', { text: part.value });
+			});
+		} else {
+			diagnosticPanel.createDiv({
+				text: '还没有同步诊断记录。执行一次智能同步后，这里会显示建议、冲突和错误信息。',
+				cls: 'history-diagnostic-muted'
+			});
+		}
+
+		const mappingRow = diagnosticPanel.createDiv({ cls: 'sync-status-detail' });
+		const appendChip = (label: string, value: string | undefined, group: 'mapping' | 'error' = 'mapping') => {
+			if (!value) {
+				return;
+			}
+			const chip = mappingRow.createDiv({ cls: `sync-status-detail-chip ${group}` });
+			chip.createEl('span', { text: label, cls: 'sync-status-detail-label' });
+			chip.createEl('span', { text: value });
 		};
+		appendChip('文件', item.filePath);
+		appendChip('DocToken', item.docToken);
+		if (!view?.detailParts.some((part) => part.label === 'Bitable')) {
+			appendChip('Bitable', item.bitableRecordId);
+		}
 	}
 
-	private async tryDeleteBitableForHistoryToken(docToken: string): Promise<void> {
+private async tryDeleteBitableForHistoryEntry(entry: HistoryListEntry): Promise<void> {
 		try {
-			const appToken = this.plugin.settings.bitableAppToken;
-			const tableId = this.plugin.settings.bitableTableId;
+			const historyItem = entry.history;
+			const stateItem = entry.state;
+			const appToken = String(historyItem?.bitableAppToken || stateItem?.bitableAppToken || this.plugin.settings.bitableAppToken || '').trim();
+			const tableId = String(historyItem?.bitableTableId || stateItem?.bitableTableId || this.plugin.settings.bitableTableId || '').trim();
 			if (!appToken || !tableId) {
 				return;
 			}
-			const history = Array.isArray(this.plugin.settings.uploadHistory) ? this.plugin.settings.uploadHistory : [];
-			const it = history.find((h) => h && String(h.docToken) === String(docToken));
-			if (!it) {
-				return;
-			}
 
-			const directRecordId = it.bitableRecordId ? String(it.bitableRecordId) : '';
+			const directRecordId = String(historyItem?.bitableRecordId || stateItem?.bitableRecordId || entry.bitableRecordId || '').trim();
 			if (directRecordId) {
 				await this.plugin.feishuApi.deleteBitableRecord(appToken, tableId, directRecordId);
 				return;
 			}
 
-			const url = it.url || (it.docToken ? `https://feishu.cn/docx/${it.docToken}` : '');
+			const url = entry.url || (entry.docToken ? `https://feishu.cn/docx/${entry.docToken}` : '');
 			if (!url) {
 				return;
 			}
@@ -1411,26 +2106,99 @@ export class FeishuSettingTab extends PluginSettingTab {
 		}
 	}
 
-	private async deleteHistoryItem(docToken: string): Promise<void> {
-		await this.plugin.removeMappingByDocToken(docToken);
+	private async deleteHistoryEntry(entry: HistoryListEntry): Promise<void> {
+		const docToken = String(entry.docToken || '').trim();
+		const filePath = String(entry.filePath || '').trim();
+		if (docToken) {
+			try {
+				await this.plugin.feishuApi.deleteDocument(docToken);
+			} catch (e) {
+				if (!this.isNotFoundError(e) && !this.isTokenInvalidDeleteError(e)) {
+					throw e;
+				}
+			}
+		}
+		await this.tryDeleteBitableForHistoryEntry(entry);
+		if (docToken) {
+			await this.plugin.removeMappingByDocToken(docToken);
+			return;
+		}
+		if (filePath) {
+			await this.plugin.removeMappingByFilePath(filePath);
+		}
 	}
 
-	private async batchSetPermissions(): Promise<void> {
-		if (this.selectedHistoryDocTokens.size === 0) {
+	private async clearHistoryRecordOnlyEntry(entry: HistoryListEntry): Promise<void> {
+		const filePath = String(entry.filePath || '').trim();
+		if (!filePath) {
+			throw new Error('这条记录缺少本地路径，无法只清除记录');
+		}
+		await this.plugin.removeMappingByFilePath(filePath);
+		this.clearHistorySelection([entry]);
+		this.expandedHistoryEntries.delete(entry.key);
+	}
+
+	private async clearHistoryRecordOnly(entry: HistoryListEntry): Promise<void> {
+		const filePath = String(entry.filePath || '').trim();
+		if (!filePath) {
+			new Notice('❌ 这条记录缺少本地路径，无法只清除记录');
+			return;
+		}
+		const confirmed = confirm(`确定要只清除“${entry.title || filePath}”这条记录吗？\n\n这只会移除插件中的本地同步记录和映射关系，不会删除飞书文档或多维表格记录。`);
+		if (!confirmed) {
+			return;
+		}
+		await this.clearHistoryRecordOnlyEntry(entry);
+		this.display();
+		new Notice('✅ 已只清除记录');
+	}
+
+	private async batchClearHistoryRecords(entries: HistoryListEntry[]): Promise<void> {
+		const selectedEntries = entries
+			.filter((entry) => this.canClearHistoryRecordOnly(entry))
+			.filter((entry, index, list) => {
+				const key = this.getHistoryEntrySelectionKey(entry);
+				return !!key && list.findIndex((candidate) => this.getHistoryEntrySelectionKey(candidate) === key) === index;
+			});
+		if (selectedEntries.length === 0) {
+			new Notice('❌ 请先选择要清除的记录');
+			return;
+		}
+		const confirmed = confirm(`确定要清除当前分组已选的 ${selectedEntries.length} 条记录吗？\n\n这只会移除插件中的本地同步记录和映射关系，不会删除飞书文档或多维表格记录。`);
+		if (!confirmed) return;
+		const notice = this.plugin.settings.suppressShareNotices ? undefined : new Notice(`🧹 正在清除记录(0/${selectedEntries.length})...`, 0);
+		try {
+			for (let i = 0; i < selectedEntries.length; i++) {
+				const entry = selectedEntries[i];
+				notice?.setMessage(`🧹 正在清除记录(${i + 1}/${selectedEntries.length})...`);
+				await this.clearHistoryRecordOnlyEntry(entry);
+			}
+			new Notice('✅ 批量清除记录完成');
+		} catch (e) {
+			new Notice(`❌ 批量清除记录失败: ${(e as Error).message || String(e)}`);
+		} finally {
+			notice?.hide();
+			this.display();
+		}
+	}
+
+private async batchSetPermissions(entries: HistoryListEntry[]): Promise<void> {
+		const selectedEntries = entries.filter((entry) => this.canSetPermissionsForEntry(entry));
+		const selectedTokens = Array.from(new Set(selectedEntries.map((entry) => String(entry.docToken || '').trim()).filter((token) => !!token)));
+		if (selectedEntries.length === 0 || selectedTokens.length === 0) {
 			new Notice('❌ 请先选择要设置的文档');
 			return;
 		}
-		const tokens = Array.from(this.selectedHistoryDocTokens);
 		new PermissionModal(this.app, this.plugin, {
 			title: '批量设置权限',
-			description: `将以下设置应用到所选 ${tokens.length} 个文档`,
+			description: `将以下设置应用到当前分组所选 ${selectedTokens.length} 个文档`,
 			onSubmit: async (enableLinkShare, linkSharePermission) => {
-				const notice = this.plugin.settings.suppressShareNotices ? undefined : new Notice(`🔗 正在设置权限(0/${tokens.length})...`, 0);
+				const notice = this.plugin.settings.suppressShareNotices ? undefined : new Notice(`🔗 正在设置权限(0/${selectedTokens.length})...`, 0);
 				try {
-					for (let i = 0; i < tokens.length; i++) {
-						notice?.setMessage(`🔗 正在设置权限(${i + 1}/${tokens.length})...`);
+					for (let i = 0; i < selectedTokens.length; i++) {
+						notice?.setMessage(`🔗 正在设置权限(${i + 1}/${selectedTokens.length})...`);
 						await this.plugin.feishuApi.setDocumentSharePermissionsExplicit({
-							documentToken: tokens[i],
+							documentToken: selectedTokens[i],
 							enableLinkShare,
 							linkSharePermission,
 							skipPermissionCheck: true
@@ -1441,41 +2209,38 @@ export class FeishuSettingTab extends PluginSettingTab {
 					new Notice(`❌ 批量设置权限失败: ${(e as Error).message || String(e)}`);
 				} finally {
 					notice?.hide();
-					this.selectedHistoryDocTokens.clear();
+					this.clearHistorySelection(selectedEntries);
 					this.display();
 				}
 			}
 		}).open();
 	}
 
-	private async batchDeleteItems(): Promise<void> {
-		if (this.selectedHistoryDocTokens.size === 0) {
-			new Notice('❌ 请先选择要删除的文档');
+	private async batchDeleteItems(entries: HistoryListEntry[]): Promise<void> {
+		const selectedEntries = entries.filter((entry, index, list) => {
+			const key = this.getHistoryEntrySelectionKey(entry);
+			return !!key && list.findIndex((candidate) => this.getHistoryEntrySelectionKey(candidate) === key) === index;
+		});
+		if (selectedEntries.length === 0) {
+			new Notice('❌ 请先选择要删除的记录');
 			return;
 		}
-		const confirmed = confirm(`确定要批量删除 ${this.selectedHistoryDocTokens.size} 个文档吗？\n\n注意：此操作将删除飞书云端文档，并移除本地映射。`);
+		const confirmed = confirm(`确定要删除当前分组已选的 ${selectedEntries.length} 条记录吗？\n\n注意：能删除远端内容时会一并删除远端，并移除这些记录的本地映射。未勾选的分组记录不会受影响。`);
 		if (!confirmed) return;
-		const tokens = Array.from(this.selectedHistoryDocTokens);
-		const notice = this.plugin.settings.suppressShareNotices ? undefined : new Notice(`🗑️ 正在删除(0/${tokens.length})...`, 0);
+		const notice = this.plugin.settings.suppressShareNotices ? undefined : new Notice(`🗑️ 正在删除(0/${selectedEntries.length})...`, 0);
 		try {
-			for (let i = 0; i < tokens.length; i++) {
-				notice?.setMessage(`🗑️ 正在删除(${i + 1}/${tokens.length})...`);
-				try {
-					await this.plugin.feishuApi.deleteDocument(tokens[i]);
-				} catch (e) {
-					if (!this.isNotFoundError(e) && !this.isTokenInvalidDeleteError(e)) {
-						throw e;
-					}
-				}
-				await this.tryDeleteBitableForHistoryToken(tokens[i]);
-				await this.deleteHistoryItem(tokens[i]);
+			for (let i = 0; i < selectedEntries.length; i++) {
+				const entry = selectedEntries[i];
+				notice?.setMessage(`🗑️ 正在删除(${i + 1}/${selectedEntries.length})...`);
+				await this.deleteHistoryEntry(entry);
+				this.clearHistorySelection([entry]);
+				this.expandedHistoryEntries.delete(entry.key);
 			}
 			new Notice('✅ 批量删除完成');
 		} catch (e) {
 			new Notice(`❌ 批量删除失败: ${(e as Error).message || String(e)}`);
 		} finally {
 			notice?.hide();
-			this.selectedHistoryDocTokens.clear();
 			this.display();
 		}
 	}

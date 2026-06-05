@@ -64,6 +64,8 @@ test('counts include attention recommendations in problem sync states', () => {
 	assert.deepEqual(diagnostics.getSyncStatusCounts(sampleStates), {
 		all: 4,
 		problem: 3,
+		localDeleted: 0,
+		remoteDeleted: 0,
 		synced: 2,
 		conflict: 1,
 		error: 1
@@ -175,6 +177,26 @@ test('local missing states explain the mapping problem and cannot be synced in b
 	});
 });
 
+
+test('remote missing states stay visible and do not enter smart sync', () => {
+	const state = {
+		filePath: 'Notes/zombie.md',
+		title: 'Zombie',
+		status: 'error',
+		lastError: 'IOTO Task Profile 远端记录已删除（recordId: rec-zombie），本地文件暂时保留'
+	};
+	const view = diagnostics.buildSyncStatusView(state);
+
+	assert.equal(diagnostics.isRemoteMissingState(state), true);
+	assert.equal(view.canSync, false);
+	assert.equal(view.shouldAutoSync, false);
+	assert.equal(view.summary, '远端记录已删除，本地文件暂时保留，请手动处理');
+	assert.deepEqual(view.recommendation, {
+		level: 'blocked',
+		label: '远端已删除',
+		action: '当前不会自动删除本地文件，可保留本地文件或只清除记录'
+	});
+});
 test('synced states can still surface observed remote drift', () => {
 	const view = diagnostics.buildSyncStatusView({
 		filePath: 'Notes/drift.md',

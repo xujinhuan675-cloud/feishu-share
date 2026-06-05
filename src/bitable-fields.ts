@@ -50,8 +50,34 @@ export function bitableFieldToPlainText(value: any): string {
 		if (typeof value.en_name === 'string' && value.en_name.trim()) return value.en_name;
 		if (typeof value.value === 'string' && value.value.trim()) return value.value;
 		if (Array.isArray(value.link_record_ids)) return value.link_record_ids.join(', ');
+		if (Array.isArray(value.record_ids)) return value.record_ids.filter((item: any) => item !== undefined && item !== null && String(item).trim()).join(', ');
+		if (Array.isArray(value.text_arr)) {
+			const textArr = value.text_arr
+				.map((item: any) => bitableFieldToPlainText(item).trim())
+				.filter((item: string) => item.length > 0);
+			if (textArr.length > 0) {
+				return textArr.join(', ');
+			}
+		}
+		if (isEmptyStructuredBitableObject(value)) return '';
 	}
 	return JSON.stringify(value);
+}
+
+export function bitableFieldToDisplayText(value: any, fieldMeta?: BitableFieldMeta): string {
+	if (value === undefined || value === null) {
+		return '';
+	}
+	if (fieldMeta?.type === 5) {
+		return formatBitableDateDisplay(value);
+	}
+	if ((typeof value === 'number' && looksLikeTimestamp(value)) || (typeof value === 'string' && looksLikeTimestampString(value))) {
+		const maybeDate = formatBitableDateDisplay(value);
+		if (maybeDate) {
+			return maybeDate;
+		}
+	}
+	return bitableFieldToPlainText(value);
 }
 
 export function bitableFieldToFrontMatterValue(value: any, fieldType?: number): string | number | boolean | string[] | undefined {
@@ -151,4 +177,79 @@ export function normalizeBitableWriteValue(value: any, fieldMeta?: BitableFieldM
 	}
 
 	return value;
+}
+
+function formatBitableDateDisplay(value: any): string {
+	const timestamp = parseTimestampValue(value);
+	if (!Number.isFinite(timestamp)) {
+		return bitableFieldToPlainText(value);
+	}
+	const date = new Date(timestamp);
+	if (!Number.isFinite(date.getTime())) {
+		return bitableFieldToPlainText(value);
+	}
+	const yyyy = date.getFullYear();
+	const mm = String(date.getMonth() + 1).padStart(2, '0');
+	const dd = String(date.getDate()).padStart(2, '0');
+	const hh = String(date.getHours()).padStart(2, '0');
+	const min = String(date.getMinutes()).padStart(2, '0');
+	const sec = String(date.getSeconds()).padStart(2, '0');
+	const hasTime = date.getHours() !== 0 || date.getMinutes() !== 0 || date.getSeconds() !== 0 || date.getMilliseconds() !== 0;
+	if (!hasTime) {
+		return `${yyyy}/${mm}/${dd}`;
+	}
+	return date.getSeconds() === 0 && date.getMilliseconds() === 0
+		? `${yyyy}/${mm}/${dd} ${hh}:${min}`
+		: `${yyyy}/${mm}/${dd} ${hh}:${min}:${sec}`;
+}
+
+function parseTimestampValue(value: any): number {
+	if (typeof value === 'number' && Number.isFinite(value)) {
+		return value;
+	}
+	if (typeof value === 'string') {
+		const trimmed = value.trim();
+		if (/^\d{12,14}$/.test(trimmed)) {
+			const numeric = Number(trimmed);
+			return Number.isFinite(numeric) ? numeric : NaN;
+		}
+		const parsed = Date.parse(trimmed);
+		return Number.isFinite(parsed) ? parsed : NaN;
+	}
+	return NaN;
+}
+
+function looksLikeTimestamp(value: number): boolean {
+	return Number.isFinite(value) && Math.abs(value) >= 1e11 && Math.abs(value) < 1e14;
+}
+
+function looksLikeTimestampString(value: string): boolean {
+	return /^\d{12,14}$/.test(String(value || '').trim());
+}
+
+function isEmptyStructuredBitableObject(value: Record<string, any>): boolean {
+	const relevantKeys = ['text', 'name', 'link', 'url', 'href', 'email', 'en_name', 'value', 'record_ids', 'link_record_ids', 'text_arr'];
+	const hasStructuredShape = relevantKeys.some((key) => Object.prototype.hasOwnProperty.call(value, key));
+	if (!hasStructuredShape) {
+		return false;
+	}
+	for (const key of ['text', 'name', 'link', 'url', 'href', 'email', 'en_name', 'value']) {
+		if (typeof value[key] === 'string' && value[key].trim()) {
+			return false;
+		}
+	}
+	for (const key of ['record_ids', 'link_record_ids']) {
+		if (Array.isArray(value[key]) && value[key].some((item: any) => item !== undefined && item !== null && String(item).trim())) {
+			return false;
+		}
+	}
+	if (Array.isArray(value.text_arr)) {
+		const textArr = value.text_arr
+			.map((item: any) => bitableFieldToPlainText(item).trim())
+			.filter((item: string) => item.length > 0);
+		if (textArr.length > 0) {
+			return false;
+		}
+	}
+	return true;
 }

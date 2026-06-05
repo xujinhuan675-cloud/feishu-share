@@ -222,6 +222,41 @@ test('doc and Bitable remote baselines are tracked independently', () => {
 	assert.equal(state.remoteHash, 'hash-1');
 });
 
+test('doc and Bitable local baselines are tracked independently', () => {
+	const settings = createSettings();
+	const service = new SyncStateService(settings);
+	service.upsert({
+		filePath: 'Notes/both-local.md',
+		content: 'doc baseline',
+		direction: 'obsidian-to-feishu',
+		status: 'synced',
+		remoteRevision: 'rev-1'
+	});
+
+	const state = service.upsert({
+		filePath: 'Notes/both-local.md',
+		content: 'bitable baseline',
+		direction: 'bitable',
+		status: 'synced',
+		remoteHash: 'hash-1'
+	});
+
+	assert.equal(state.docLocalHash, service.hashContent('doc baseline'));
+	assert.equal(state.bitableLocalHash, service.hashContent('bitable baseline'));
+	assert.equal(
+		service.evaluateSync('Notes/both-local.md', 'doc baseline', { kind: 'doc', revision: 'rev-1' }).hasLocalChanges,
+		false
+	);
+	assert.equal(
+		service.evaluateSync('Notes/both-local.md', 'bitable baseline', { kind: 'bitable', hash: 'hash-1' }).hasLocalChanges,
+		false
+	);
+	assert.equal(
+		service.evaluateSync('Notes/both-local.md', 'doc baseline', { kind: 'bitable', hash: 'hash-1' }).hasLocalChanges,
+		true
+	);
+});
+
 test('Bitable evaluation prefers the Bitable-specific remote hash baseline', () => {
 	const settings = createSettings({
 		syncStates: [{

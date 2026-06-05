@@ -8357,6 +8357,59 @@ export class FeishuApiService {
 		}
 	}
 
+	async listBitableRecords(params: {
+		appToken: string;
+		tableId: string;
+		viewId?: string;
+		pageSize?: number;
+	}): Promise<{ success: boolean; records?: Array<{ recordId: string; fields: Record<string, any>; updatedAt?: number }>; error?: string }> {
+		try {
+			const normalizedAppToken = this.normalizeBitableId(params.appToken);
+			const normalizedTableId = this.normalizeBitableId(params.tableId);
+			const normalizedViewId = this.normalizeBitableId(params.viewId || '');
+			if (!normalizedAppToken || !normalizedTableId) {
+				return { success: false, error: '缺少 appToken/tableId' };
+			}
+			const records: Array<{ recordId: string; fields: Record<string, any>; updatedAt?: number }> = [];
+			let pageToken = '';
+			const pageSize = Math.max(1, Math.min(500, Math.round(Number(params.pageSize || 100))));
+			for (let attempt = 0; attempt < 100; attempt++) {
+				const query = new URLSearchParams();
+				query.set('page_size', String(pageSize));
+				if (normalizedViewId) {
+					query.set('view_id', normalizedViewId);
+				}
+				if (pageToken) {
+					query.set('page_token', pageToken);
+				}
+				const url = `${FEISHU_CONFIG.BASE_URL}/bitable/v1/apps/${normalizedAppToken}/tables/${normalizedTableId}/records?${query.toString()}`;
+				const data = await this.bitableRequest('GET', url);
+				if (data.code !== 0) {
+					return { success: false, error: data.msg ? `(${data.code}) ${data.msg}` : `获取记录列表失败(${data.code})` };
+				}
+				const items = data.data && Array.isArray(data.data.items) ? data.data.items : [];
+				for (const item of items) {
+					const recordId = item && item.record_id ? String(item.record_id) : '';
+					if (!recordId) {
+						continue;
+					}
+					records.push({
+						recordId,
+						fields: item.fields || {},
+						updatedAt: this.parseBitableRecordUpdatedAt(item)
+					});
+				}
+				pageToken = data.data && data.data.page_token ? String(data.data.page_token) : '';
+				if (!data.data?.has_more || !pageToken) {
+					break;
+				}
+			}
+			return { success: true, records };
+		} catch (error) {
+			return { success: false, error: (error as Error).message || String(error) };
+		}
+	}
+
 	private parseBitableRecordUpdatedAt(record: any): number | undefined {
 		const candidates = [
 			record?.last_modified_time,

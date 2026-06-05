@@ -98,6 +98,1045 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian7 = require("obsidian");
 
+// src/bitable-fields.ts
+var STRUCTURED_BTABLE_FIELD_TYPES = /* @__PURE__ */ new Set([11, 15, 17, 18, 19, 21, 22, 23]);
+function tryParseJsonString(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (!(trimmed.startsWith("{") && trimmed.endsWith("}") || trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch (e) {
+    return null;
+  }
+}
+function normalizeStringList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => bitableFieldToPlainText(item).trim()).filter((item) => item.length > 0);
+  }
+  if (typeof value === "string") {
+    return value.split(/[\n,;]+/).map((item) => item.trim()).filter((item) => item.length > 0);
+  }
+  const text = bitableFieldToPlainText(value).trim();
+  return text ? [text] : [];
+}
+function bitableFieldToPlainText(value) {
+  if (value === void 0 || value === null)
+    return "";
+  if (typeof value === "string")
+    return value;
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => bitableFieldToPlainText(item)).filter((item) => item.length > 0).join(", ");
+  }
+  if (typeof value === "object") {
+    if (typeof value.text === "string" && value.text.trim())
+      return value.text;
+    if (typeof value.name === "string" && value.name.trim())
+      return value.name;
+    if (typeof value.link === "string" && value.link.trim())
+      return value.link;
+    if (typeof value.url === "string" && value.url.trim())
+      return value.url;
+    if (typeof value.href === "string" && value.href.trim())
+      return value.href;
+    if (typeof value.email === "string" && value.email.trim())
+      return value.email;
+    if (typeof value.en_name === "string" && value.en_name.trim())
+      return value.en_name;
+    if (typeof value.value === "string" && value.value.trim())
+      return value.value;
+    if (Array.isArray(value.link_record_ids))
+      return value.link_record_ids.join(", ");
+    if (Array.isArray(value.record_ids))
+      return value.record_ids.filter((item) => item !== void 0 && item !== null && String(item).trim()).join(", ");
+    if (Array.isArray(value.text_arr)) {
+      const textArr = value.text_arr.map((item) => bitableFieldToPlainText(item).trim()).filter((item) => item.length > 0);
+      if (textArr.length > 0) {
+        return textArr.join(", ");
+      }
+    }
+    if (isEmptyStructuredBitableObject(value))
+      return "";
+  }
+  return JSON.stringify(value);
+}
+function bitableFieldToDisplayText(value, fieldMeta) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  if ((fieldMeta == null ? void 0 : fieldMeta.type) === 5) {
+    return formatBitableDateDisplay(value);
+  }
+  if (typeof value === "number" && looksLikeTimestamp(value) || typeof value === "string" && looksLikeTimestampString(value)) {
+    const maybeDate = formatBitableDateDisplay(value);
+    if (maybeDate) {
+      return maybeDate;
+    }
+  }
+  return bitableFieldToPlainText(value);
+}
+function bitableFieldToFrontMatterValue(value, fieldType) {
+  if (value === void 0 || value === null) {
+    return void 0;
+  }
+  if (fieldType === 4) {
+    const items = normalizeStringList(value);
+    return items.length ? items : void 0;
+  }
+  if (fieldType === 7) {
+    if (typeof value === "boolean")
+      return value;
+    const text2 = bitableFieldToPlainText(value).trim().toLowerCase();
+    if (!text2)
+      return void 0;
+    return text2 === "true" || text2 === "1" || text2 === "yes";
+  }
+  if (fieldType === 2) {
+    const numeric = typeof value === "number" ? value : Number(bitableFieldToPlainText(value).trim());
+    return Number.isFinite(numeric) ? numeric : void 0;
+  }
+  const text = bitableFieldToPlainText(value).trim();
+  return text || void 0;
+}
+function normalizeBitableWriteValue(value, fieldMeta, now = Date.now()) {
+  if (value === void 0 || value === null || !fieldMeta) {
+    return value;
+  }
+  const { type } = fieldMeta;
+  if (STRUCTURED_BTABLE_FIELD_TYPES.has(type) && typeof value === "string") {
+    const parsed = tryParseJsonString(value);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  if (type === 1) {
+    return bitableFieldToPlainText(value);
+  }
+  if (type === 2) {
+    const numeric = typeof value === "number" ? value : Number(bitableFieldToPlainText(value).trim());
+    return Number.isFinite(numeric) ? numeric : 0;
+  }
+  if (type === 3) {
+    return bitableFieldToPlainText(value).trim();
+  }
+  if (type === 4) {
+    return normalizeStringList(value);
+  }
+  if (type === 5) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    const parsed = Date.parse(bitableFieldToPlainText(value).trim());
+    return Number.isFinite(parsed) ? parsed : now;
+  }
+  if (type === 7) {
+    if (typeof value === "boolean")
+      return value;
+    if (typeof value === "number")
+      return value !== 0;
+    const normalized = bitableFieldToPlainText(value).trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on";
+  }
+  if (type === 11) {
+    if (Array.isArray(value))
+      return value;
+    const items = normalizeStringList(value);
+    return items.length ? items.map((id) => ({ id })) : value;
+  }
+  if (type === 15) {
+    if (value && typeof value === "object")
+      return value;
+    const text = bitableFieldToPlainText(value).trim();
+    if (!text)
+      return "";
+    const markdownLink = text.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+    if (markdownLink) {
+      return {
+        text: markdownLink[1].trim(),
+        link: markdownLink[2].trim()
+      };
+    }
+    return {
+      text,
+      link: text
+    };
+  }
+  if (type === 18) {
+    if (value && typeof value === "object")
+      return value;
+    const ids = normalizeStringList(value);
+    return ids.length ? { link_record_ids: ids } : value;
+  }
+  return value;
+}
+function formatBitableDateDisplay(value) {
+  const timestamp = parseTimestampValue(value);
+  if (!Number.isFinite(timestamp)) {
+    return bitableFieldToPlainText(value);
+  }
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) {
+    return bitableFieldToPlainText(value);
+  }
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  const sec = String(date.getSeconds()).padStart(2, "0");
+  const hasTime = date.getHours() !== 0 || date.getMinutes() !== 0 || date.getSeconds() !== 0 || date.getMilliseconds() !== 0;
+  if (!hasTime) {
+    return `${yyyy}/${mm}/${dd}`;
+  }
+  return date.getSeconds() === 0 && date.getMilliseconds() === 0 ? `${yyyy}/${mm}/${dd} ${hh}:${min}` : `${yyyy}/${mm}/${dd} ${hh}:${min}:${sec}`;
+}
+function parseTimestampValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^\d{12,14}$/.test(trimmed)) {
+      const numeric = Number(trimmed);
+      return Number.isFinite(numeric) ? numeric : NaN;
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+  return NaN;
+}
+function looksLikeTimestamp(value) {
+  return Number.isFinite(value) && Math.abs(value) >= 1e11 && Math.abs(value) < 1e14;
+}
+function looksLikeTimestampString(value) {
+  return /^\d{12,14}$/.test(String(value || "").trim());
+}
+function isEmptyStructuredBitableObject(value) {
+  const relevantKeys = ["text", "name", "link", "url", "href", "email", "en_name", "value", "record_ids", "link_record_ids", "text_arr"];
+  const hasStructuredShape = relevantKeys.some((key) => Object.prototype.hasOwnProperty.call(value, key));
+  if (!hasStructuredShape) {
+    return false;
+  }
+  for (const key of ["text", "name", "link", "url", "href", "email", "en_name", "value"]) {
+    if (typeof value[key] === "string" && value[key].trim()) {
+      return false;
+    }
+  }
+  for (const key of ["record_ids", "link_record_ids"]) {
+    if (Array.isArray(value[key]) && value[key].some((item) => item !== void 0 && item !== null && String(item).trim())) {
+      return false;
+    }
+  }
+  if (Array.isArray(value.text_arr)) {
+    const textArr = value.text_arr.map((item) => bitableFieldToPlainText(item).trim()).filter((item) => item.length > 0);
+    if (textArr.length > 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// src/bitable-profile.ts
+var IOTO_TASK_PROFILE_ID = "ioto-task";
+var PROFILE_FRONTMATTER_FIELDS = [
+  "stage",
+  "status",
+  "ai_scope",
+  "owner",
+  "project",
+  "source",
+  "related",
+  "next_action",
+  "review_required",
+  "feishu_record_id",
+  "feishu_table_id",
+  "feishu_view_id",
+  "feishu_status",
+  "feishu_priority",
+  "feishu_category",
+  "feishu_synced_at"
+];
+var WRITEBACK_FRONTMATTER_FIELDS = [
+  "stage",
+  "status",
+  "ai_scope",
+  "owner",
+  "project",
+  "source",
+  "related",
+  "next_action",
+  "review_required",
+  "feishu_priority",
+  "feishu_category"
+];
+var DEFAULT_IOTO_TASK_PROFILE = {
+  id: IOTO_TASK_PROFILE_ID,
+  name: "IOTO Task Profile",
+  enabled: true,
+  appToken: "Wl3rbgORca63instiTpcaz1DnvZ",
+  tableId: "tbl02ZXD0Kkb2xOB",
+  viewId: "vewx3UsjHG",
+  targetDir: "IOTO/Tasks",
+  fileNameTemplate: "{{title}}",
+  fieldMapping: {
+    title: ["\u4EFB\u52A1", "\u4EFB\u52A1\u63CF\u8FF0", "Title", "title", "\u540D\u79F0"],
+    body: ["\u6B63\u6587", "\u8BF4\u660E", "Description", "description", "content"],
+    stage: ["\u9636\u6BB5", "Stage", "stage"],
+    status: ["\u72B6\u6001", "Status", "status"],
+    ai_scope: ["AI Scope", "AI\u8303\u56F4", "AI \u8303\u56F4", "ai_scope"],
+    owner: ["\u8D1F\u8D23\u4EBA", "Owner", "owner"],
+    project: ["\u9879\u76EE", "Project", "project"],
+    source: ["\u6765\u6E90", "Source", "source"],
+    related: ["\u5173\u8054", "Related", "related"],
+    next_action: ["\u4E0B\u4E00\u6B65", "Next Action", "next_action"],
+    review_required: ["\u9700\u590D\u6838", "Review Required", "review_required"],
+    priority: ["\u4F18\u5148\u7EA7", "Priority", "priority"],
+    category: ["\u5206\u7C7B", "Category", "category"]
+  },
+  statusMapping: {
+    "\u672A\u5F00\u59CB": "todo",
+    "\u5F85\u5904\u7406": "todo",
+    "\u8FDB\u884C\u4E2D": "doing",
+    "\u5904\u7406\u4E2D": "doing",
+    "\u5DF2\u5B8C\u6210": "done",
+    "\u5B8C\u6210": "done",
+    "\u5DF2\u53D6\u6D88": "cancelled",
+    todo: "todo",
+    doing: "doing",
+    done: "done",
+    cancelled: "cancelled"
+  },
+  reverseStatusMapping: {
+    todo: "\u672A\u5F00\u59CB",
+    doing: "\u8FDB\u884C\u4E2D",
+    done: "\u5DF2\u5B8C\u6210",
+    cancelled: "\u5DF2\u53D6\u6D88"
+  },
+  bodyFields: ["body"],
+  primaryBodyField: "body",
+  bodyTemplate: "{{body}}",
+  syncUncontrolledBody: false,
+  fieldNamesCache: [],
+  tableOptionsCache: [],
+  scheduledSyncEnabled: false,
+  scheduledSyncIntervalMinutes: 30,
+  scheduledSyncRunOnStartup: false
+};
+function getEmbeddedProfileDefaults(profileId) {
+  return profileId === IOTO_TASK_PROFILE_ID ? DEFAULT_IOTO_TASK_PROFILE : null;
+}
+function mergeDefaultBitableProfiles(profiles) {
+  const normalized = Array.isArray(profiles) ? profiles.map(normalizeBitableProfile).filter((profile) => !!profile) : [];
+  return normalized.length > 0 ? normalized : [{ ...DEFAULT_IOTO_TASK_PROFILE }];
+}
+function normalizeBitableProfile(profile) {
+  if (!profile || typeof profile !== "object") {
+    return null;
+  }
+  const id = String(profile.id || "").trim();
+  const appToken = String(profile.appToken || "").trim();
+  const tableId = String(profile.tableId || "").trim();
+  if (!id || !appToken || !tableId) {
+    return null;
+  }
+  const defaults = getEmbeddedProfileDefaults(id);
+  const fieldMapping = {
+    ...normalizeProfileFieldMapping(defaults == null ? void 0 : defaults.fieldMapping),
+    ...normalizeProfileFieldMapping(profile.fieldMapping)
+  };
+  const statusMapping = {
+    ...normalizeStringRecord(defaults == null ? void 0 : defaults.statusMapping),
+    ...normalizeStringRecord(profile.statusMapping)
+  };
+  const reverseStatusMapping = {
+    ...normalizeStringRecord(defaults == null ? void 0 : defaults.reverseStatusMapping),
+    ...normalizeStringRecord(profile.reverseStatusMapping)
+  };
+  const frontmatterFields = normalizeStringList2(profile.frontmatterFields);
+  const bodyFields = normalizeStringList2(profile.bodyFields);
+  return {
+    ...defaults ? { ...defaults } : {},
+    ...profile,
+    id,
+    name: String(profile.name || (defaults == null ? void 0 : defaults.name) || id).trim(),
+    enabled: profile.enabled !== false,
+    appToken,
+    tableId,
+    viewId: String(profile.viewId || (defaults == null ? void 0 : defaults.viewId) || "").trim(),
+    targetDir: normalizeVaultPath(profile.targetDir || (defaults == null ? void 0 : defaults.targetDir) || ""),
+    fileNameTemplate: String(profile.fileNameTemplate || (defaults == null ? void 0 : defaults.fileNameTemplate) || "{{title}}"),
+    fieldMapping,
+    statusMapping,
+    reverseStatusMapping,
+    frontmatterFields: frontmatterFields.length ? frontmatterFields : normalizeStringList2(defaults == null ? void 0 : defaults.frontmatterFields),
+    bodyFields: bodyFields.length ? bodyFields : normalizeStringList2(defaults == null ? void 0 : defaults.bodyFields),
+    primaryBodyField: String(profile.primaryBodyField || (defaults == null ? void 0 : defaults.primaryBodyField) || "").trim(),
+    bodyTemplate: String(profile.bodyTemplate || (defaults == null ? void 0 : defaults.bodyTemplate) || "{{body}}"),
+    syncUncontrolledBody: profile.syncUncontrolledBody !== void 0 ? !!profile.syncUncontrolledBody : !!(defaults == null ? void 0 : defaults.syncUncontrolledBody),
+    fieldNamesCache: normalizeStringList2(profile.fieldNamesCache),
+    tableOptionsCache: Array.isArray(profile.tableOptionsCache) ? profile.tableOptionsCache.map((item) => ({
+      tableId: String((item == null ? void 0 : item.tableId) || "").trim(),
+      name: String((item == null ? void 0 : item.name) || "").trim(),
+      revision: typeof (item == null ? void 0 : item.revision) === "number" ? item.revision : void 0
+    })).filter((item) => !!item.tableId) : [],
+    scheduledSyncEnabled: !!profile.scheduledSyncEnabled,
+    scheduledSyncIntervalMinutes: Number.isFinite(Number(profile.scheduledSyncIntervalMinutes)) ? Math.max(5, Math.min(24 * 60, Math.round(Number(profile.scheduledSyncIntervalMinutes)))) : 30,
+    scheduledSyncRunOnStartup: !!profile.scheduledSyncRunOnStartup
+  };
+}
+function selectScheduledBitableProfiles(profiles, selectedIds) {
+  const all = mergeDefaultBitableProfiles(profiles).filter((profile) => profile.enabled !== false && profile.scheduledSyncEnabled);
+  const selected = new Set((selectedIds || []).map((id) => String(id || "").trim()).filter((id) => !!id));
+  if (!selected.size) {
+    return all;
+  }
+  return all.filter((profile) => selected.has(profile.id));
+}
+function selectBitableProfileForFile(profiles, filePath, content, explicitProfileId) {
+  const all = mergeDefaultBitableProfiles(profiles).filter((profile) => profile.enabled !== false);
+  const explicit = String(explicitProfileId || "").trim();
+  if (explicit) {
+    const hit = all.find((profile) => profile.id === explicit);
+    if (hit) {
+      return hit;
+    }
+  }
+  const contentProfileId = content ? getProfileIdFromMarkdown(content) : "";
+  if (contentProfileId) {
+    const hit = all.find((profile) => profile.id === contentProfileId);
+    if (hit) {
+      return hit;
+    }
+  }
+  return all.find((profile) => isPathInsideProfileTarget(filePath, profile)) || null;
+}
+function getProfileIdFromMarkdown(content) {
+  const fm = extractFrontMatterObject(content);
+  return String(fm.feishu_profile || fm.bitable_profile || "").trim();
+}
+function isPathInsideProfileTarget(filePath, profile) {
+  const targetDir = normalizeVaultPath(profile.targetDir || "");
+  if (!targetDir) {
+    return false;
+  }
+  const path = normalizeVaultPath(filePath || "");
+  return path === targetDir || path.startsWith(`${targetDir}/`);
+}
+function getProfileFieldCandidates(profile, logicalKey) {
+  const key = String(logicalKey || "").trim();
+  if (!key) {
+    return [];
+  }
+  const mapping = profile.fieldMapping || {};
+  const raw = mapping[key];
+  const candidates = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const withFallback = [...candidates, key].map((item) => String(item || "").trim()).filter((item) => !!item);
+  return [...new Set(withFallback)];
+}
+function resolveProfileFieldName(profile, logicalKey, availableFieldNames) {
+  const candidates = getProfileFieldCandidates(profile, logicalKey);
+  if (!candidates.length) {
+    return "";
+  }
+  if (!availableFieldNames || !availableFieldNames.size) {
+    return candidates[0];
+  }
+  return resolveFieldNameFromAvailable(availableFieldNames, candidates) || "";
+}
+function getProfileFieldValue(fields, profile, logicalKey) {
+  if (!fields) {
+    return void 0;
+  }
+  const fieldName = resolveFieldNameFromFields(fields, getProfileFieldCandidates(profile, logicalKey));
+  return fieldName ? fields[fieldName] : void 0;
+}
+function buildProfileFrontMatterFromRecord(profile, recordId, fields, now = Date.now()) {
+  const frontmatterFields = getProfileFrontMatterFields(profile);
+  const rawStatus = bitableFieldToPlainText(getProfileFieldValue(fields, profile, "status")).trim();
+  const result = {
+    feishu_profile: profile.id
+  };
+  for (const key of frontmatterFields) {
+    if (key === "feishu_record_id") {
+      result[key] = recordId;
+      continue;
+    }
+    if (key === "feishu_table_id") {
+      result[key] = profile.tableId;
+      continue;
+    }
+    if (key === "feishu_view_id") {
+      if (profile.viewId) {
+        result[key] = profile.viewId;
+      }
+      continue;
+    }
+    if (key === "feishu_status") {
+      if (rawStatus) {
+        result[key] = rawStatus;
+      }
+      continue;
+    }
+    if (key === "feishu_priority") {
+      const value2 = profileFieldToFrontMatterValue(getProfileFieldValue(fields, profile, "priority"), key);
+      if (value2 !== void 0) {
+        result[key] = value2;
+      }
+      continue;
+    }
+    if (key === "feishu_category") {
+      const value2 = profileFieldToFrontMatterValue(getProfileFieldValue(fields, profile, "category"), key);
+      if (value2 !== void 0) {
+        result[key] = value2;
+      }
+      continue;
+    }
+    if (key === "feishu_synced_at") {
+      result[key] = new Date(now).toISOString();
+      continue;
+    }
+    if (key === "status") {
+      if (rawStatus) {
+        result[key] = mapRemoteStatus(profile, rawStatus);
+      }
+      continue;
+    }
+    const value = profileFieldToFrontMatterValue(getProfileFieldValue(fields, profile, key), key);
+    if (value !== void 0) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+function applyProfileRecordToMarkdown(content, profile, recordId, fields, now = Date.now(), fieldMetaByName) {
+  let next = upsertFrontMatterFields(content, buildProfileFrontMatterFromRecord(profile, recordId, fields, now));
+  if (getProfileBodyFields(profile).length > 0) {
+    next = upsertProfileControlledBlock(next, profile, renderProfileBodyFromFields(profile, fields, fieldMetaByName));
+  }
+  return normalizeTrailingNewline(next);
+}
+function buildProfileMarkdownFromRecord(profile, recordId, fields, now = Date.now(), fieldMetaByName) {
+  return applyProfileRecordToMarkdown("", profile, recordId, fields, now, fieldMetaByName);
+}
+function buildProfileBitableFieldsFromMarkdown(content, profile, fieldMetaByName, now = Date.now()) {
+  const frontmatter = extractFrontMatterObject(content);
+  const available = fieldMetaByName ? new Set(fieldMetaByName.keys()) : void 0;
+  const fields = {};
+  const setField = (logicalKey, value) => {
+    if (value === void 0 || value === null || value === "") {
+      return;
+    }
+    const fieldName = resolveProfileFieldName(profile, logicalKey, available);
+    if (!fieldName) {
+      return;
+    }
+    fields[fieldName] = normalizeBitableWriteValue(value, fieldMetaByName == null ? void 0 : fieldMetaByName.get(fieldName), now);
+  };
+  for (const key of WRITEBACK_FRONTMATTER_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(frontmatter, key)) {
+      continue;
+    }
+    const rawValue = frontmatter[key];
+    if (key === "status") {
+      setField("status", mapLocalStatusToRemote(profile, rawValue));
+    } else if (key === "feishu_priority") {
+      setField("priority", rawValue);
+    } else if (key === "feishu_category") {
+      setField("category", rawValue);
+    } else {
+      setField(key, rawValue);
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(frontmatter, "status") && frontmatter.feishu_status) {
+    setField("status", frontmatter.feishu_status);
+  }
+  const body = extractProfileControlledBlock(content, profile);
+  const primaryBodyField = getPrimaryBodyField(profile);
+  if (body !== null) {
+    setField(primaryBodyField, body);
+  } else if (profile.syncUncontrolledBody) {
+    const localBody = stripFrontMatter(content).trim();
+    if (localBody) {
+      setField(primaryBodyField, localBody);
+    }
+  }
+  return fields;
+}
+function getProfileRecordIdFromMarkdown(content) {
+  const frontmatter = extractFrontMatterObject(content);
+  return String(frontmatter.feishu_record_id || frontmatter.recordId || frontmatter.bitableRecordId || "").trim();
+}
+function buildProfileManagedContent(content, profile) {
+  const frontmatter = extractFrontMatterObject(content);
+  const picked = {};
+  const managedKeys = ["feishu_profile", ...getProfileFrontMatterFields(profile)];
+  for (const key of managedKeys) {
+    if (Object.prototype.hasOwnProperty.call(frontmatter, key)) {
+      picked[key] = frontmatter[key];
+    }
+  }
+  picked.controlled_block = extractProfileControlledBlock(content, profile) || "";
+  return stableStringifyProfile(picked);
+}
+function buildProfileRemoteManagedContent(profile, recordId, fields) {
+  const remote = {
+    profile_id: profile.id,
+    record_id: recordId,
+    table_id: profile.tableId,
+    view_id: profile.viewId || ""
+  };
+  for (const key of [...getProfileFrontMatterFields(profile), ...getProfileBodyFields(profile), "title", "priority", "category"]) {
+    if (key === "feishu_synced_at") {
+      continue;
+    }
+    if (key === "title") {
+      const title = resolveProfileTitleText(profile, recordId, fields);
+      if (title) {
+        remote.title = title;
+      }
+      continue;
+    }
+    const logicalKey = key === "feishu_priority" ? "priority" : key === "feishu_category" ? "category" : key;
+    const value = getProfileFieldValue(fields, profile, logicalKey);
+    if (value !== void 0) {
+      remote[logicalKey] = value;
+    }
+  }
+  return stableStringifyProfile(remote);
+}
+function renderProfileBodyFromFields(profile, fields, fieldMetaByName) {
+  const values = {};
+  values.title = resolveProfileTitleText(profile, "", fields);
+  for (const key of [...getProfileBodyFields(profile), ...getProfileFrontMatterFields(profile), "title", "priority", "category"]) {
+    const value = getProfileFieldValue(fields, profile, key);
+    if (value !== void 0) {
+      values[key] = bitableFieldToPlainText(value);
+    }
+  }
+  const rendered = renderTemplate(profile.bodyTemplate || "{{body}}", values).trim();
+  return rendered || buildFallbackProfileBody(profile, fields, fieldMetaByName);
+}
+function extractProfileControlledBlock(content, profile) {
+  const normalized = normalizeLineEndings(content);
+  const start = escapeRegExp(getProfileBlockStart(profile));
+  const end = escapeRegExp(getProfileBlockEnd(profile));
+  const match = normalized.match(new RegExp(`${start}\\n?([\\s\\S]*?)\\n?${end}`));
+  if (!match) {
+    return null;
+  }
+  return match[1].replace(/^\n+|\n+$/g, "");
+}
+function upsertProfileControlledBlock(content, profile, body) {
+  const hadCrLf = /\r\n/.test(content);
+  const normalized = normalizeLineEndings(content);
+  const start = getProfileBlockStart(profile);
+  const end = getProfileBlockEnd(profile);
+  const block = `${start}
+${String(body || "").trim()}
+${end}`;
+  const blockRe = new RegExp(`${escapeRegExp(start)}\\n?[\\s\\S]*?\\n?${escapeRegExp(end)}`);
+  if (blockRe.test(normalized)) {
+    return restoreLineEndings(normalized.replace(blockRe, block), hadCrLf);
+  }
+  const insert = `${block}
+
+`;
+  const fm = getFrontMatterRange(normalized);
+  if (fm) {
+    const next = `${normalized.slice(0, fm.end)}
+${insert}${normalized.slice(fm.end).replace(/^\n+/, "")}`;
+    return restoreLineEndings(next, hadCrLf);
+  }
+  return restoreLineEndings(`${insert}${normalized.replace(/^\n+/, "")}`, hadCrLf);
+}
+function renderProfileFileName(profile, recordId, fields) {
+  const values = {
+    record_id: recordId,
+    title: resolveProfileTitleText(profile, recordId, fields)
+  };
+  for (const key of [...getProfileFrontMatterFields(profile), ...getProfileBodyFields(profile), "priority", "category"]) {
+    const value = getProfileFieldValue(fields, profile, key);
+    if (value !== void 0) {
+      values[key] = bitableFieldToPlainText(value).trim();
+    }
+  }
+  const rawName = renderTemplate(profile.fileNameTemplate || "{{title}}", values).trim() || recordId;
+  return sanitizeFileName(rawName);
+}
+function extractFrontMatterObject(content) {
+  const normalized = normalizeLineEndings(content);
+  const range = getFrontMatterRange(normalized);
+  if (!range) {
+    return {};
+  }
+  const result = {};
+  const lines = getFrontMatterText(normalized, range).split("\n");
+  for (const line of lines) {
+    const match = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+    if (!match) {
+      continue;
+    }
+    result[match[1]] = parseFrontMatterScalar(match[2]);
+  }
+  return result;
+}
+function upsertFrontMatterFields(content, fields) {
+  const hadCrLf = /\r\n/.test(content);
+  const normalized = normalizeLineEndings(content);
+  const entries = Object.entries(fields).filter(([key, value]) => String(key || "").trim() && value !== void 0);
+  if (!entries.length) {
+    return content;
+  }
+  const range = getFrontMatterRange(normalized);
+  if (!range) {
+    const fm = entries.map(([key, value]) => `${key}: ${formatFrontMatterValue(value)}`).join("\n");
+    return restoreLineEndings(`---
+${fm}
+---
+${normalized}`, hadCrLf);
+  }
+  const fmLines = getFrontMatterText(normalized, range).split("\n");
+  for (const [key, value] of entries) {
+    const keyRe = new RegExp(`^${escapeRegExp(key)}\\s*:`);
+    let replaced = false;
+    for (let i = 0; i < fmLines.length; i++) {
+      if (keyRe.test(fmLines[i])) {
+        fmLines[i] = `${key}: ${formatFrontMatterValue(value)}`;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) {
+      fmLines.push(`${key}: ${formatFrontMatterValue(value)}`);
+    }
+  }
+  return restoreLineEndings(`---
+${fmLines.join("\n")}
+---
+${normalized.slice(range.end)}`, hadCrLf);
+}
+function stripFrontMatter(content) {
+  const normalized = normalizeLineEndings(content);
+  const range = getFrontMatterRange(normalized);
+  return range ? normalized.slice(range.end).replace(/^\n+/, "") : normalized;
+}
+function stableStringifyProfile(value) {
+  if (value === null || value === void 0) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringifyProfile(item)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringifyProfile(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+function getProfileFrontMatterFields(profile) {
+  return normalizeStringList2(profile.frontmatterFields).length ? normalizeStringList2(profile.frontmatterFields) : PROFILE_FRONTMATTER_FIELDS;
+}
+function getProfileBodyFields(profile) {
+  const fields = normalizeStringList2(profile.bodyFields);
+  return fields.length ? fields : ["body"];
+}
+function getPrimaryBodyField(profile) {
+  return String(profile.primaryBodyField || "").trim() || getProfileBodyFields(profile)[0] || "body";
+}
+function mapRemoteStatus(profile, status) {
+  const text = String(status || "").trim();
+  return profile.statusMapping && profile.statusMapping[text] || text;
+}
+function mapLocalStatusToRemote(profile, status) {
+  const text = String(status || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (profile.reverseStatusMapping && profile.reverseStatusMapping[text]) {
+    return profile.reverseStatusMapping[text];
+  }
+  const reverse = Object.fromEntries(
+    Object.entries(profile.statusMapping || {}).map(([remote, local]) => [String(local), String(remote)])
+  );
+  return reverse[text] || text;
+}
+function profileFieldToFrontMatterValue(value, key) {
+  if (key === "review_required") {
+    if (typeof value === "boolean") {
+      return value;
+    }
+    const text = bitableFieldToPlainText(value).trim().toLowerCase();
+    if (!text) {
+      return void 0;
+    }
+    return text === "true" || text === "1" || text === "yes" || text === "on" || text === "\u662F" || text === "\u9700\u8981";
+  }
+  if (key === "related") {
+    return bitableFieldToFrontMatterValue(value, 4);
+  }
+  return bitableFieldToFrontMatterValue(value);
+}
+function renderTemplate(template, values) {
+  return String(template || "").replace(/\{\{\s*([A-Za-z0-9_-]+)\s*\}\}/g, (_match, key) => {
+    return values[String(key)] || "";
+  });
+}
+function resolveFieldNameFromAvailable(availableFieldNames, candidates) {
+  for (const candidate of candidates) {
+    if (availableFieldNames.has(candidate)) {
+      return candidate;
+    }
+  }
+  const comparable = buildComparableFieldNameMap(availableFieldNames);
+  for (const candidate of candidates) {
+    const normalized = normalizeComparableFieldName(candidate);
+    if (!normalized) {
+      continue;
+    }
+    const match = comparable.get(normalized);
+    if (match) {
+      return match;
+    }
+  }
+  return "";
+}
+function resolveFieldNameFromFields(fields, candidates) {
+  for (const candidate of candidates) {
+    if (Object.prototype.hasOwnProperty.call(fields, candidate)) {
+      return candidate;
+    }
+  }
+  const comparable = buildComparableFieldNameMap(Object.keys(fields || {}));
+  for (const candidate of candidates) {
+    const normalized = normalizeComparableFieldName(candidate);
+    if (!normalized) {
+      continue;
+    }
+    const match = comparable.get(normalized);
+    if (match) {
+      return match;
+    }
+  }
+  return "";
+}
+function resolveProfileTitleText(profile, recordId, fields) {
+  const mappedTitle = bitableFieldToPlainText(getProfileFieldValue(fields, profile, "title")).trim();
+  if (mappedTitle) {
+    return mappedTitle;
+  }
+  const fallbackField = resolveFieldNameFromFields(fields, ["\u6807\u9898", "\u540D\u79F0", "\u4E3B\u9898", "name", "title", "subject"]);
+  if (fallbackField) {
+    const fallbackValue = bitableFieldToPlainText(fields[fallbackField]).trim();
+    if (fallbackValue) {
+      return fallbackValue;
+    }
+  }
+  for (const value of Object.values(fields || {})) {
+    const text = bitableFieldToPlainText(value).trim();
+    if (text) {
+      return text;
+    }
+  }
+  return recordId || "untitled";
+}
+function buildFallbackProfileBody(profile, fields, fieldMetaByName) {
+  const titleFieldName = resolveFieldNameFromFields(fields, getProfileFieldCandidates(profile, "title"));
+  const titleFieldKey = normalizeComparableFieldName(titleFieldName);
+  const orderedEntries = getOrderedFieldEntries(profile, fields, fieldMetaByName);
+  const sections = [];
+  for (const [fieldName, value] of orderedEntries) {
+    const text = bitableFieldToDisplayText(value, fieldMetaByName == null ? void 0 : fieldMetaByName.get(fieldName)).trim();
+    if (!text) {
+      continue;
+    }
+    const comparableName = normalizeComparableFieldName(fieldName);
+    if (titleFieldKey && comparableName === titleFieldKey) {
+      continue;
+    }
+    const label = stripDecorativeFieldPrefix(fieldName) || String(fieldName || "").trim();
+    if (!label) {
+      continue;
+    }
+    sections.push(`## ${label}
+${text}`);
+  }
+  if (sections.length > 0) {
+    return sections.join("\n\n").trim();
+  }
+  return resolveProfileTitleText(profile, "", fields).trim();
+}
+function getOrderedFieldEntries(profile, fields, fieldMetaByName) {
+  const entries = Object.entries(fields || {});
+  if (!entries.length) {
+    return [];
+  }
+  const preferredOrder = [
+    ...normalizeStringList2(profile.fieldNamesCache),
+    ...fieldMetaByName && fieldMetaByName.size ? Array.from(fieldMetaByName.keys()) : []
+  ];
+  if (!preferredOrder.length) {
+    return entries;
+  }
+  const ordered = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const preferredName of preferredOrder) {
+    const actualFieldName = resolveFieldNameFromFields(fields, [preferredName]);
+    if (!actualFieldName || seen.has(actualFieldName)) {
+      continue;
+    }
+    ordered.push([actualFieldName, fields[actualFieldName]]);
+    seen.add(actualFieldName);
+  }
+  for (const [fieldName, value] of entries) {
+    if (!seen.has(fieldName)) {
+      ordered.push([fieldName, value]);
+    }
+  }
+  return ordered;
+}
+function normalizeProfileFieldMapping(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {};
+  }
+  const result = {};
+  for (const [key, value] of Object.entries(input)) {
+    const logicalKey = String(key || "").trim();
+    if (!logicalKey) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      const items = value.map((item) => String(item || "").trim()).filter((item) => !!item);
+      if (items.length) {
+        result[logicalKey] = items;
+      }
+      continue;
+    }
+    const fieldName = String(value || "").trim();
+    if (fieldName) {
+      result[logicalKey] = fieldName;
+    }
+  }
+  return result;
+}
+function normalizeStringRecord(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [String(key || "").trim(), String(value || "").trim()]).filter(([key, value]) => !!key && !!value)
+  );
+}
+function normalizeStringList2(input) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input.map((item) => String(item || "").trim()).filter((item) => !!item);
+}
+function buildComparableFieldNameMap(fieldNames) {
+  const result = /* @__PURE__ */ new Map();
+  for (const fieldName of fieldNames) {
+    const normalized = normalizeComparableFieldName(fieldName);
+    if (normalized && !result.has(normalized)) {
+      result.set(normalized, fieldName);
+    }
+  }
+  return result;
+}
+function normalizeComparableFieldName(value) {
+  return String(value || "").normalize("NFKC").replace(/[\u200d\uFE0F]/g, "").replace(/^[^0-9A-Za-z\u4E00-\u9FFF]+/gu, "").replace(/\s+/g, "").toLowerCase().trim();
+}
+function stripDecorativeFieldPrefix(value) {
+  const cleaned = String(value || "").replace(/[\u200d\uFE0F]/g, "").replace(/^[^0-9A-Za-z\u4E00-\u9FFF]+/gu, "").trim();
+  return cleaned || String(value || "").trim();
+}
+function parseFrontMatterScalar(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  try {
+    if (text.startsWith('"') && text.endsWith('"') || text.startsWith("[") && text.endsWith("]") || text.startsWith("{") && text.endsWith("}")) {
+      return JSON.parse(text);
+    }
+  } catch (e) {
+    return text.replace(/^["']|["']$/g, "");
+  }
+  if (text === "true") {
+    return true;
+  }
+  if (text === "false") {
+    return false;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(text)) {
+    const numberValue = Number(text);
+    if (Number.isFinite(numberValue)) {
+      return numberValue;
+    }
+  }
+  return text.replace(/^["']|["']$/g, "");
+}
+function formatFrontMatterValue(value) {
+  if (Array.isArray(value)) {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  const text = String(value != null ? value : "");
+  if (/^(true|false|null|-?\d+(\.\d+)?)$/i.test(text)) {
+    return JSON.stringify(text);
+  }
+  return JSON.stringify(text);
+}
+function getFrontMatterRange(normalizedContent) {
+  if (!normalizedContent.startsWith("---\n")) {
+    return null;
+  }
+  const endMarker = normalizedContent.indexOf("\n---\n", 4);
+  if (endMarker < 0) {
+    if (normalizedContent.endsWith("\n---")) {
+      return { start: 4, end: normalizedContent.length };
+    }
+    return null;
+  }
+  return { start: 4, end: endMarker + 5 };
+}
+function getFrontMatterText(normalizedContent, range) {
+  return normalizedContent.slice(range.start, range.end).replace(/\n---\n?$/, "").replace(/\n+$/g, "");
+}
+function getProfileBlockStart(profile) {
+  return `<!-- feishu-share:bitable-profile:${profile.id}:begin -->`;
+}
+function getProfileBlockEnd(profile) {
+  return `<!-- feishu-share:bitable-profile:${profile.id}:end -->`;
+}
+function normalizeVaultPath(path) {
+  return String(path || "").replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "").replace(/\/{2,}/g, "/").trim();
+}
+function normalizeLineEndings(content) {
+  return String(content || "").replace(/\r\n/g, "\n");
+}
+function restoreLineEndings(content, useCrLf) {
+  return useCrLf ? content.replace(/\n/g, "\r\n") : content;
+}
+function normalizeTrailingNewline(content) {
+  return `${String(content || "").replace(/\s+$/g, "")}
+`;
+}
+function sanitizeFileName(name) {
+  const sanitized = String(name || "").replace(/[\\/:*?"<>|#^[\]]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+  return sanitized || "untitled";
+}
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // src/constants.ts
 var FEISHU_CONFIG = {
   // API 基础地址
@@ -175,7 +1214,11 @@ var DEFAULT_SETTINGS = {
   bitableTableOptionsCache: [],
   bitableFieldMapping: "",
   bitableFieldNamesCache: [],
-  bitableExcludedFields: ""
+  bitableExcludedFields: "",
+  bitableProfiles: [{ ...DEFAULT_IOTO_TASK_PROFILE }],
+  activeBitableProfileId: "",
+  enableScheduledBitableProfiles: false,
+  scheduledBitableProfileIds: [DEFAULT_IOTO_TASK_PROFILE.id]
 };
 var FEISHU_ERROR_MESSAGES = {
   1061002: "\u53C2\u6570\u9519\u8BEF\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u683C\u5F0F\u548C\u5927\u5C0F",
@@ -8810,6 +9853,54 @@ ${errorMessage}
       return { success: false, error: error.message || String(error) };
     }
   }
+  async listBitableRecords(params) {
+    var _a;
+    try {
+      const normalizedAppToken = this.normalizeBitableId(params.appToken);
+      const normalizedTableId = this.normalizeBitableId(params.tableId);
+      const normalizedViewId = this.normalizeBitableId(params.viewId || "");
+      if (!normalizedAppToken || !normalizedTableId) {
+        return { success: false, error: "\u7F3A\u5C11 appToken/tableId" };
+      }
+      const records = [];
+      let pageToken = "";
+      const pageSize = Math.max(1, Math.min(500, Math.round(Number(params.pageSize || 100))));
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const query = new URLSearchParams();
+        query.set("page_size", String(pageSize));
+        if (normalizedViewId) {
+          query.set("view_id", normalizedViewId);
+        }
+        if (pageToken) {
+          query.set("page_token", pageToken);
+        }
+        const url = `${FEISHU_CONFIG.BASE_URL}/bitable/v1/apps/${normalizedAppToken}/tables/${normalizedTableId}/records?${query.toString()}`;
+        const data = await this.bitableRequest("GET", url);
+        if (data.code !== 0) {
+          return { success: false, error: data.msg ? `(${data.code}) ${data.msg}` : `\u83B7\u53D6\u8BB0\u5F55\u5217\u8868\u5931\u8D25(${data.code})` };
+        }
+        const items = data.data && Array.isArray(data.data.items) ? data.data.items : [];
+        for (const item of items) {
+          const recordId = item && item.record_id ? String(item.record_id) : "";
+          if (!recordId) {
+            continue;
+          }
+          records.push({
+            recordId,
+            fields: item.fields || {},
+            updatedAt: this.parseBitableRecordUpdatedAt(item)
+          });
+        }
+        pageToken = data.data && data.data.page_token ? String(data.data.page_token) : "";
+        if (!((_a = data.data) == null ? void 0 : _a.has_more) || !pageToken) {
+          break;
+        }
+      }
+      return { success: true, records };
+    } catch (error) {
+      return { success: false, error: error.message || String(error) };
+    }
+  }
   parseBitableRecordUpdatedAt(record) {
     const candidates = [
       record == null ? void 0 : record.last_modified_time,
@@ -9212,6 +10303,7 @@ var WikiSelectModal = class extends import_obsidian5.Modal {
 
 // src/sync-diagnostics.ts
 var defaultDateFormatter = (timestamp) => new Date(timestamp).toLocaleString();
+var REMOTE_MISSING_ERROR_PATTERN = /^.+远端记录已删除/i;
 function normalizeSyncStatus(status) {
   if (status === "conflict" || status === "error") {
     return status;
@@ -9222,6 +10314,8 @@ function getSyncStatusCounts(states) {
   const counts = {
     all: states.length,
     problem: 0,
+    localDeleted: 0,
+    remoteDeleted: 0,
     synced: 0,
     conflict: 0,
     error: 0
@@ -9229,30 +10323,17 @@ function getSyncStatusCounts(states) {
   states.forEach((state) => {
     const status = normalizeSyncStatus(state.status);
     counts[status] += 1;
+    if (state.localMissing) {
+      counts.localDeleted += 1;
+    }
+    if (isRemoteMissingState(state)) {
+      counts.remoteDeleted += 1;
+    }
     if (isProblemState(state, status)) {
       counts.problem += 1;
     }
   });
   return counts;
-}
-function filterSyncStates(states, filter) {
-  if (filter === "all") {
-    return states;
-  }
-  return states.filter((state) => {
-    const status = normalizeSyncStatus(state.status);
-    if (filter === "problem") {
-      return isProblemState(state, status);
-    }
-    return status === filter;
-  });
-}
-function searchSyncStates(states, query) {
-  const q = String(query || "").trim().toLowerCase();
-  if (!q) {
-    return states;
-  }
-  return states.filter((state) => buildSyncSearchText(state).includes(q));
 }
 function sortSyncStates(states) {
   return [...states].sort((a, b) => {
@@ -9271,7 +10352,7 @@ function buildSyncStatusView(state, formatDate = defaultDateFormatter) {
   const status = normalizeSyncStatus(state.status);
   const detailParts = buildSyncStatusDetails(state, formatDate);
   const recommendation = getSyncStatusRecommendation(state, status);
-  const canSync = !!state.filePath && !state.localMissing;
+  const canSync = !!state.filePath && !state.localMissing && !isRemoteMissingState(state);
   return {
     state,
     status,
@@ -9304,7 +10385,12 @@ function formatSyncBatchSummary(summary) {
 function buildSyncStatusDetails(state, formatDate = defaultDateFormatter) {
   const details = [];
   addDetail(details, "\u65B9\u5411", formatSyncDirection(state.lastDirection || ""), "summary");
+  if (isRemoteMissingState(state)) {
+    addDetail(details, "\u8FDC\u7AEF\u72B6\u6001", "\u5DF2\u5220\u9664", "summary");
+  }
   addDetail(details, "\u672C\u5730\u54C8\u5E0C", state.localHash, "baseline");
+  addDetail(details, "\u6587\u6863\u672C\u5730\u54C8\u5E0C", state.docLocalHash, "baseline");
+  addDetail(details, "Bitable \u672C\u5730\u54C8\u5E0C", state.bitableLocalHash, "baseline");
   addDetail(details, "\u8FDC\u7AEF\u54C8\u5E0C", state.remoteHash, "baseline");
   addDetail(details, "\u8FDC\u7AEF revision", state.remoteRevision, "baseline");
   addDetail(details, "\u8FDC\u7AEF\u65F6\u95F4", formatOptionalDate(state.remoteUpdatedAt, formatDate), "baseline");
@@ -9352,6 +10438,9 @@ function getSyncStatusSummary(state, status = normalizeSyncStatus(state.status))
   if (state.localMissing) {
     return "\u672C\u5730\u6587\u4EF6\u5DF2\u5220\u9664\uFF0C\u9700\u6062\u590D\u6587\u4EF6\u6216\u6E05\u7406\u6620\u5C04";
   }
+  if (isRemoteMissingState(state)) {
+    return "\u8FDC\u7AEF\u8BB0\u5F55\u5DF2\u5220\u9664\uFF0C\u672C\u5730\u6587\u4EF6\u6682\u65F6\u4FDD\u7559\uFF0C\u8BF7\u624B\u52A8\u5904\u7406";
+  }
   if (status === "conflict") {
     return "\u672C\u5730\u548C\u8FDC\u7AEF\u90FD\u53D1\u751F\u53D8\u5316\uFF0C\u9700\u8981\u9009\u62E9\u4FDD\u7559\u54EA\u4E00\u4FA7";
   }
@@ -9380,6 +10469,13 @@ function getSyncStatusRecommendation(state, status = normalizeSyncStatus(state.s
       level: "blocked",
       label: "\u672C\u5730\u6587\u4EF6\u7F3A\u5931",
       action: "\u6062\u590D\u672C\u5730\u6587\u4EF6\u540E\u518D\u540C\u6B65\uFF0C\u6216\u6E05\u7406\u8FD9\u6761\u672C\u5730\u6620\u5C04"
+    };
+  }
+  if (isRemoteMissingState(state)) {
+    return {
+      level: "blocked",
+      label: "\u8FDC\u7AEF\u5DF2\u5220\u9664",
+      action: "\u5F53\u524D\u4E0D\u4F1A\u81EA\u52A8\u5220\u9664\u672C\u5730\u6587\u4EF6\uFF0C\u53EF\u4FDD\u7559\u672C\u5730\u6587\u4EF6\u6216\u53EA\u6E05\u9664\u8BB0\u5F55"
     };
   }
   if (status === "conflict") {
@@ -9432,6 +10528,9 @@ function getSyncStatusRecommendation(state, status = normalizeSyncStatus(state.s
     action: "\u6682\u65E0\u9700\u5904\u7406\uFF1B\u672C\u5730\u6539\u52A8\u540E\u53EF\u7EE7\u7EED\u4F7F\u7528\u667A\u80FD\u540C\u6B65"
   };
 }
+function isRemoteMissingState(state) {
+  return !!state && normalizeSyncStatus(state.status) === "error" && REMOTE_MISSING_ERROR_PATTERN.test(String(state.lastError || "").trim());
+}
 function isProblemStatus(status) {
   return status === "conflict" || status === "error";
 }
@@ -9440,7 +10539,7 @@ function isProblemState(state, status = normalizeSyncStatus(state.status)) {
 }
 function getSortPriority(state) {
   const status = normalizeSyncStatus(state.status);
-  if (status === "conflict" || state.localMissing) {
+  if (status === "conflict" || state.localMissing || isRemoteMissingState(state)) {
     return 3;
   }
   if (status === "error") {
@@ -9454,23 +10553,6 @@ function getSortPriority(state) {
     return 1;
   }
   return 0;
-}
-function buildSyncSearchText(state) {
-  const view = buildSyncStatusView(state);
-  return [
-    view.title,
-    view.url,
-    view.status,
-    formatSyncStatus(view.status),
-    view.summary,
-    view.recommendation.label,
-    view.recommendation.action,
-    view.detailText,
-    state.filePath,
-    state.docToken,
-    state.bitableRecordId,
-    state.lastError
-  ].filter((part) => part !== void 0 && part !== null).map((part) => String(part).toLowerCase()).join("\n");
 }
 function addDetail(details, label, value, group) {
   if (!value) {
@@ -9488,9 +10570,9 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
     super(app, plugin);
     this.activeTab = "basic";
     this.historySearchQuery = "";
-    this.syncStatusSearchQuery = "";
     this.syncStatusFilter = "all";
-    this.selectedHistoryDocTokens = /* @__PURE__ */ new Set();
+    this.selectedHistoryEntryKeys = /* @__PURE__ */ new Set();
+    this.expandedHistoryEntries = /* @__PURE__ */ new Set();
     this.plugin = plugin;
   }
   isNotFoundError(error) {
@@ -9549,6 +10631,10 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
 				.sync-status-filter-btn.is-active{background:var(--interactive-accent);color:var(--text-on-accent);}
 				.sync-status-filter-btn.is-empty{opacity:.45;}
 				.sync-status-summary{font-size:12px;color:var(--text-muted);}
+				.history-diagnostic-panel{margin-top:10px;padding-top:10px;border-top:1px solid var(--background-modifier-border);}
+				.history-diagnostic-muted{margin-top:6px;font-size:12px;color:var(--text-muted);line-height:1.45;}
+				.history-diagnostic-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;}
+				.sync-status-badge.pending{color:var(--text-muted);}
 				.bitable-field-mapping-panel{margin:10px 0 14px;padding:10px 12px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary);}
 				.bitable-field-mapping-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;}
 				.bitable-field-mapping-title{font-weight:700;}
@@ -9561,38 +10647,39 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
     });
     const tabBar = containerEl.createDiv({ cls: "feishu-settings-tabs" });
     const basicTabBtn = tabBar.createEl("button", {
-      text: "\u57FA\u7840\u8BBE\u7F6E",
+      text: "\u6587\u6863\u540C\u6B65",
       cls: `feishu-settings-tab-btn${this.activeTab === "basic" ? " is-active" : ""}`
+    });
+    const tasksTabBtn = tabBar.createEl("button", {
+      text: "\u4EFB\u52A1\u8868",
+      cls: `feishu-settings-tab-btn${this.activeTab === "tasks" ? " is-active" : ""}`
     });
     const historyTabBtn = tabBar.createEl("button", {
       text: "\u5DF2\u4E0A\u4F20\u6587\u6863\u5217\u8868",
       cls: `feishu-settings-tab-btn${this.activeTab === "history" ? " is-active" : ""}`
     });
-    const statusTabBtn = tabBar.createEl("button", {
-      text: "\u540C\u6B65\u72B6\u6001",
-      cls: `feishu-settings-tab-btn${this.activeTab === "status" ? " is-active" : ""}`
-    });
     basicTabBtn.addEventListener("click", () => {
       this.activeTab = "basic";
+      this.display();
+    });
+    tasksTabBtn.addEventListener("click", () => {
+      this.activeTab = "tasks";
       this.display();
     });
     historyTabBtn.addEventListener("click", () => {
       this.activeTab = "history";
       this.display();
     });
-    statusTabBtn.addEventListener("click", () => {
-      this.activeTab = "status";
-      this.display();
-    });
     const basicPanel = containerEl.createDiv({ cls: "feishu-settings-tab-panel" });
+    const tasksPanel = containerEl.createDiv({ cls: "feishu-settings-tab-panel" });
     const historyPanel = containerEl.createDiv({ cls: "feishu-settings-tab-panel" });
-    const statusPanel = containerEl.createDiv({ cls: "feishu-settings-tab-panel" });
     basicPanel.style.display = this.activeTab === "basic" ? "" : "none";
+    tasksPanel.style.display = this.activeTab === "tasks" ? "" : "none";
     historyPanel.style.display = this.activeTab === "history" ? "" : "none";
-    statusPanel.style.display = this.activeTab === "status" ? "" : "none";
     this.renderBasicSettings(basicPanel);
+    this.renderTaskSyncSettings(basicPanel);
+    this.renderTaskProfilesSettings(tasksPanel);
     this.renderHistoryPanel(historyPanel);
-    this.renderSyncStatusPanel(statusPanel);
   }
   renderBasicSettings(containerEl) {
     containerEl.createEl("h3", { text: "\u{1F527} \u5E94\u7528\u914D\u7F6E" });
@@ -9770,6 +10857,12 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
         });
       });
     }
+  }
+  renderTaskSyncSettings(containerEl) {
+    containerEl.createEl("h3", { text: "\u{1F4DA} \u6587\u6863\u7D22\u5F15\u8868" });
+    const desc = containerEl.createDiv({ cls: "setting-item-description" });
+    desc.style.marginBottom = "12px";
+    desc.setText("\u8FD9\u91CC\u914D\u7F6E\u6587\u6863\u540C\u6B65\u65F6\u4F7F\u7528\u7684\u591A\u7EF4\u8868\u7D22\u5F15\u80FD\u529B\uFF1B\u4EFB\u52A1\u8868\u540C\u6B65\u653E\u5728\u5355\u72EC\u7684\u201C\u4EFB\u52A1\u8868\u201D\u6807\u7B7E\u9875\u3002");
     containerEl.createEl("h3", { text: "\u{1F504} \u540C\u6B65\u8BBE\u7F6E" });
     new import_obsidian6.Setting(containerEl).setName("\u540C\u6B65\u76EE\u6807").setDesc("\u9009\u62E9\u540C\u6B65\u4E91\u6587\u6863\uFF08docx\uFF09/\u591A\u7EF4\u8868\u683C\uFF08bitable\uFF09\u6216\u4E24\u8005").addDropdown((dropdown) => {
       dropdown.addOption("docx", "\u4E91\u6587\u6863\uFF08docx\uFF09").addOption("bitable", "\u591A\u7EF4\u8868\u683C\uFF08bitable\uFF09").addOption("both", "\u4E24\u8005\u90FD\u540C\u6B65").setValue(this.plugin.settings.syncTarget || "docx").onChange(async (value) => {
@@ -9797,6 +10890,11 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
         await this.plugin.saveSettings();
         this.display();
       });
+    }).addButton((btn) => {
+      btn.setButtonText("\u7ACB\u5373\u540C\u6B65\u4E00\u6B21").setCta().onClick(async () => {
+        await this.plugin.runScheduledSmartSync("manual", true);
+        this.display();
+      });
     });
     if (this.plugin.settings.enableScheduledSync) {
       new import_obsidian6.Setting(containerEl).setName("\u5B9A\u65F6\u540C\u6B65\u95F4\u9694\uFF08\u5206\u949F\uFF09").setDesc("\u6700\u5C0F 5 \u5206\u949F\uFF0C\u9ED8\u8BA4 30 \u5206\u949F").addText((text) => text.setPlaceholder("30").setValue(String(this.plugin.settings.scheduledSyncIntervalMinutes || 30)).onChange(async (value) => {
@@ -9821,12 +10919,6 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
         toggle.setValue(!!this.plugin.settings.scheduledSyncRunOnStartup).onChange(async (value) => {
           this.plugin.settings.scheduledSyncRunOnStartup = value;
           await this.plugin.saveSettings();
-        });
-      });
-      new import_obsidian6.Setting(containerEl).setName("\u7ACB\u5373\u6267\u884C\u4E00\u6B21\u5B9A\u65F6\u540C\u6B65").setDesc("\u6309\u5F53\u524D\u5B9A\u65F6\u540C\u6B65\u8303\u56F4\u624B\u52A8\u6267\u884C\u4E00\u6B21\u975E\u4EA4\u4E92\u5F0F\u667A\u80FD\u540C\u6B65").addButton((btn) => {
-        btn.setButtonText("\u7ACB\u5373\u6267\u884C").setCta().onClick(async () => {
-          await this.plugin.runScheduledSmartSync("manual", true);
-          this.display();
         });
       });
       const reportText = this.describeScheduledSyncReport(this.plugin.settings.scheduledSyncReport);
@@ -9893,170 +10985,237 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
         this.plugin.settings.bitableExcludedFields = value;
         await this.plugin.saveSettings();
       }));
-      new import_obsidian6.Setting(containerEl).setName("\u5B57\u6BB5\u6620\u5C04 JSON").setDesc("\u5C06\u63D2\u4EF6\u903B\u8F91\u5B57\u6BB5\u6620\u5C04\u5230\u591A\u7EF4\u8868\u683C\u5B57\u6BB5\u540D\u3002\u7559\u7A7A\u4F7F\u7528\u9ED8\u8BA4\u5B57\u6BB5\u540D\u3002").addTextArea((text) => text.setPlaceholder('\u4F8B\u5982\uFF1A{\n  "title": "\u6807\u9898",\n  "content": "\u6B63\u6587",\n  "link": "\u98DE\u4E66\u94FE\u63A5"\n}').setValue(this.plugin.settings.bitableFieldMapping || "").onChange(async (value) => {
-        this.plugin.settings.bitableFieldMapping = value;
-        await this.plugin.saveSettings();
-      }));
       this.renderBitableFieldMappingHint(containerEl);
       this.renderBitableFieldMappingAssistant(containerEl);
     }
   }
-  renderBitableTableAssistant(containerEl) {
-    const panel = containerEl.createDiv({ cls: "bitable-field-mapping-panel" });
-    const toolbar = panel.createDiv({ cls: "bitable-field-mapping-toolbar" });
-    toolbar.createDiv({ text: "\u6570\u636E\u8868\u9009\u62E9\u52A9\u624B", cls: "bitable-field-mapping-title" });
-    const actions = toolbar.createDiv({ cls: "bitable-field-mapping-actions" });
-    const loadButton = actions.createEl("button", { text: "\u8BFB\u53D6\u6570\u636E\u8868" });
-    const hint = panel.createDiv({ cls: "bitable-field-mapping-hint" });
-    const tables = this.getCachedBitableTableOptions();
-    const currentTableId = String(this.plugin.settings.bitableTableId || "").trim();
-    const renderTableSelect = (target, options) => {
-      const grid = target.createDiv({ cls: "bitable-field-mapping-grid" });
-      grid.createDiv({ text: "\u9009\u62E9\u6570\u636E\u8868", cls: "bitable-field-mapping-label" });
-      const select = grid.createEl("select", { cls: "bitable-field-mapping-select" });
-      select.createEl("option", { text: "\u4FDD\u7559\u624B\u52A8\u586B\u5199\u7684 Table ID", value: "" });
-      for (const option of options) {
-        const label = option.name ? `${option.name} (${option.tableId})` : option.tableId;
-        select.createEl("option", { text: label, value: option.tableId });
-      }
-      if (currentTableId && options.some((option) => option.tableId === currentTableId)) {
-        select.value = currentTableId;
-      }
-      select.addEventListener("change", async () => {
-        const next = String(select.value || "").trim();
-        if (next && next !== this.plugin.settings.bitableTableId) {
-          this.plugin.settings.bitableTableId = next;
-          this.plugin.settings.bitableFieldNamesCache = [];
-          await this.plugin.saveSettings();
-          this.display();
-        }
-      });
+  renderTaskProfilesSettings(containerEl) {
+    containerEl.createEl("h3", { text: "\u{1F5C2}\uFE0F \u4EFB\u52A1\u8868\u540C\u6B65" });
+    const desc = containerEl.createDiv({ cls: "setting-item-description" });
+    desc.style.marginBottom = "12px";
+    desc.setText("\u4EFB\u52A1\u8868\u4F7F\u7528\u72EC\u7ACB\u7684 appToken / tableId / viewId\uFF0C\u628A\u98DE\u4E66\u591A\u7EF4\u8868\u8BB0\u5F55\u540C\u6B65\u5230\u672C\u5730 Markdown\u3002\u6587\u6863\u7D22\u5F15\u8868\u914D\u7F6E\u4FDD\u7559\u5728\u201C\u6587\u6863\u540C\u6B65\u201D\u6807\u7B7E\u9875\u3002");
+    this.renderBitableProfilesSettings(containerEl);
+  }
+  createNewBitableProfile() {
+    const suffix = Date.now().toString(36);
+    return {
+      id: `profile-${suffix}`,
+      name: `\u65B0\u4EFB\u52A1\u8868 ${suffix.slice(-4)}`,
+      enabled: true,
+      appToken: "",
+      tableId: "",
+      viewId: "",
+      targetDir: "Tasks",
+      fileNameTemplate: "{{title}}",
+      fieldMapping: {},
+      statusMapping: {},
+      reverseStatusMapping: {},
+      bodyFields: ["body"],
+      primaryBodyField: "body",
+      bodyTemplate: "{{body}}",
+      syncUncontrolledBody: false,
+      fieldNamesCache: [],
+      tableOptionsCache: [],
+      scheduledSyncEnabled: false,
+      scheduledSyncIntervalMinutes: 30,
+      scheduledSyncRunOnStartup: false
     };
-    if (!tables.length) {
-      hint.setText("\u5148\u586B\u5199\u6216\u7C98\u8D34 App Token\uFF0C\u518D\u70B9\u51FB\u201C\u8BFB\u53D6\u6570\u636E\u8868\u201D\u3002\u82E5\u8BFB\u53D6\u5931\u8D25\uFF0C\u4ECD\u53EF\u624B\u52A8\u586B\u5199 Table ID\u3002");
+  }
+  getProfileRemoteStatusValue(profile, localStatus) {
+    var _a;
+    return String(((_a = profile.reverseStatusMapping) == null ? void 0 : _a[localStatus]) || "").trim();
+  }
+  setProfileRemoteStatusValue(profile, localStatus, remoteStatus) {
+    const cleanRemote = String(remoteStatus || "").trim();
+    const nextReverse = { ...profile.reverseStatusMapping || {} };
+    if (cleanRemote) {
+      nextReverse[localStatus] = cleanRemote;
     } else {
-      renderTableSelect(panel, tables);
-      hint.setText(`\u5DF2\u8BFB\u53D6 ${tables.length} \u5F20\u6570\u636E\u8868${currentTableId ? `\uFF1B\u5F53\u524D Table ID\uFF1A${currentTableId}` : ""}`);
+      delete nextReverse[localStatus];
     }
-    loadButton.onclick = async () => {
-      try {
-        if (!this.plugin.settings.bitableAppToken) {
-          new import_obsidian6.Notice("\u274C \u8BF7\u5148\u586B\u5199 Bitable App Token");
-          return;
-        }
-        loadButton.disabled = true;
-        loadButton.textContent = "\u8BFB\u53D6\u4E2D...";
-        const result = await this.plugin.feishuApi.getBitableTables(this.plugin.settings.bitableAppToken);
-        if (!result.success || !result.tables) {
-          new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u6570\u636E\u8868\u5931\u8D25\uFF1A${result.error || "\u672A\u77E5\u9519\u8BEF"}`);
-          return;
-        }
-        this.setCachedBitableTableOptions(result.tables);
-        if (!this.plugin.settings.bitableTableId && result.tables.length === 1) {
-          this.plugin.settings.bitableTableId = result.tables[0].tableId;
-        }
+    const nextStatus = {};
+    for (const [local, remote] of Object.entries(nextReverse)) {
+      if (!remote) {
+        continue;
+      }
+      nextStatus[remote] = local;
+    }
+    for (const local of ["todo", "doing", "done", "cancelled"]) {
+      nextStatus[local] = local;
+    }
+    profile.reverseStatusMapping = nextReverse;
+    profile.statusMapping = nextStatus;
+  }
+  renderBitableProfilesSettings(containerEl) {
+    var _a;
+    const profiles = this.getBitableProfilesForSettings();
+    const activeProfileId = this.plugin.settings.activeBitableProfileId || ((_a = profiles[0]) == null ? void 0 : _a.id) || "";
+    const activeIndex = Math.max(0, profiles.findIndex((profile) => profile.id === activeProfileId));
+    const activeProfile = profiles[activeIndex];
+    new import_obsidian6.Setting(containerEl).setName("\u5F53\u524D\u4EFB\u52A1\u8868").setDesc("\u9009\u62E9\u8981\u7F16\u8F91\u7684\u4EFB\u52A1 Profile\u3002").addDropdown((dropdown) => {
+      for (const profile of profiles) {
+        dropdown.addOption(profile.id, profile.name || profile.id);
+      }
+      dropdown.setValue((activeProfile == null ? void 0 : activeProfile.id) || "");
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.activeBitableProfileId = value;
         await this.plugin.saveSettings();
-        new import_obsidian6.Notice(`\u2705 \u5DF2\u8BFB\u53D6 ${result.tables.length} \u5F20\u6570\u636E\u8868`);
         this.display();
-      } catch (error) {
-        new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u6570\u636E\u8868\u5931\u8D25\uFF1A${error.message}`);
-      } finally {
-        loadButton.disabled = false;
-        loadButton.textContent = "\u8BFB\u53D6\u6570\u636E\u8868";
-      }
-    };
-  }
-  renderBitableFieldMappingHint(containerEl) {
-    const raw = String(this.plugin.settings.bitableFieldMapping || "").trim();
-    const hint = containerEl.createDiv({ cls: "setting-item-description" });
-    hint.style.marginTop = "-8px";
-    hint.style.marginBottom = "10px";
-    if (!raw) {
-      hint.setText("\u5F53\u524D\u4F7F\u7528\u9ED8\u8BA4\u5B57\u6BB5\u540D\uFF1Atitle\u3001content\u3001status\u3001link\u3001created\u3001updated\u3001tags\u3001excerpt\u3001author\u3001aliases\u3001slug\u3001folder\u3001value\u3001recordId\u3002");
-      return;
-    }
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("\u5FC5\u987B\u662F JSON \u5BF9\u8C61");
-      }
-      const count = Object.entries(parsed).filter(([key, value]) => String(key || "").trim() && String(value || "").trim()).length;
-      hint.setText(`\u5B57\u6BB5\u6620\u5C04\u6709\u6548\uFF1A${count} \u9879\u3002`);
-    } catch (error) {
-      hint.setText(`\u5B57\u6BB5\u6620\u5C04 JSON \u683C\u5F0F\u9519\u8BEF\uFF1A${error.message}`);
-      hint.addClass("mod-warning");
-    }
-  }
-  renderBitableFieldMappingAssistant(containerEl) {
-    const panel = containerEl.createDiv({ cls: "bitable-field-mapping-panel" });
-    const toolbar = panel.createDiv({ cls: "bitable-field-mapping-toolbar" });
-    toolbar.createDiv({ text: "\u5B57\u6BB5\u6620\u5C04\u52A9\u624B", cls: "bitable-field-mapping-title" });
-    const actions = toolbar.createDiv({ cls: "bitable-field-mapping-actions" });
-    const loadButton = actions.createEl("button", { text: "\u8BFB\u53D6\u8868\u683C\u5B57\u6BB5" });
-    const resetButton = actions.createEl("button", { text: "\u6E05\u7A7A\u6620\u5C04" });
-    const hint = panel.createDiv({ cls: "bitable-field-mapping-hint" });
-    const parseMapping = () => {
-      const raw = String(this.plugin.settings.bitableFieldMapping || "").trim();
-      if (!raw)
-        return {};
-      try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return {};
-        }
-        return Object.fromEntries(
-          Object.entries(parsed).map(([key, value]) => [String(key || "").trim(), String(value || "").trim()]).filter(([key, value]) => key && value)
-        );
-      } catch (e) {
-        return {};
-      }
-    };
-    const saveMapping = async (mapping) => {
-      this.plugin.settings.bitableFieldMapping = Object.keys(mapping).length > 0 ? JSON.stringify(mapping, null, 2) : "";
+      });
+    }).addButton((button) => button.setButtonText("\u65B0\u589E").onClick(async () => {
+      const created = this.createNewBitableProfile();
+      this.plugin.settings.bitableProfiles = [...profiles, created];
+      this.plugin.settings.activeBitableProfileId = created.id;
       await this.plugin.saveSettings();
       this.display();
-    };
-    const currentFields = this.getCachedBitableFieldNames();
-    if (!currentFields.length) {
-      hint.setText("\u5148\u70B9\u51FB\u201C\u8BFB\u53D6\u8868\u683C\u5B57\u6BB5\u201D\uFF0C\u518D\u7528\u4E0B\u62C9\u6846\u4E3A title\u3001content\u3001link \u7B49\u903B\u8F91\u5B57\u6BB5\u9009\u62E9\u5BF9\u5E94\u7684\u591A\u7EF4\u8868\u683C\u5B57\u6BB5\u3002");
-    } else {
-      this.renderBitableFieldMappingRows(panel, currentFields, parseMapping, saveMapping);
-      hint.setText(`\u5DF2\u8BFB\u53D6 ${currentFields.length} \u4E2A\u8868\u683C\u5B57\u6BB5\u3002`);
-    }
-    loadButton.onclick = async () => {
-      try {
-        if (!this.plugin.settings.bitableAppToken || !this.plugin.settings.bitableTableId) {
-          new import_obsidian6.Notice("\u274C \u8BF7\u5148\u586B\u5199 Bitable App Token \u548C Table ID");
-          return;
-        }
-        loadButton.disabled = true;
-        loadButton.textContent = "\u8BFB\u53D6\u4E2D...";
-        const result = await this.plugin.feishuApi.getBitableTableFields(
-          this.plugin.settings.bitableAppToken,
-          this.plugin.settings.bitableTableId
-        );
-        if (!result.success || !result.fields) {
-          new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u5B57\u6BB5\u5931\u8D25\uFF1A${result.error || "\u672A\u77E5\u9519\u8BEF"}`);
-          return;
-        }
-        const names = result.fields.map((field) => field.name).filter((name) => !!name);
-        this.setCachedBitableFieldNames(names);
-        await this.plugin.saveSettings();
-        new import_obsidian6.Notice(`\u2705 \u5DF2\u8BFB\u53D6 ${names.length} \u4E2A\u8868\u683C\u5B57\u6BB5`);
-        this.display();
-      } catch (error) {
-        new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u5B57\u6BB5\u5931\u8D25\uFF1A${error.message}`);
-      } finally {
-        loadButton.disabled = false;
-        loadButton.textContent = "\u8BFB\u53D6\u8868\u683C\u5B57\u6BB5";
+    })).addButton((button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
+      var _a2;
+      if (!activeProfile) {
+        return;
       }
+      if (!confirm(`\u786E\u5B9A\u5220\u9664\u4EFB\u52A1 Profile\u300C${activeProfile.name || activeProfile.id}\u300D\u5417\uFF1F`)) {
+        return;
+      }
+      const nextProfiles = profiles.filter((profile) => profile.id !== activeProfile.id);
+      this.plugin.settings.bitableProfiles = nextProfiles;
+      this.plugin.settings.activeBitableProfileId = ((_a2 = nextProfiles[0]) == null ? void 0 : _a2.id) || "";
+      await this.plugin.saveSettings();
+      this.display();
+    }));
+    if (!activeProfile) {
+      containerEl.createEl("p", { text: "\u6682\u65E0\u4EFB\u52A1 Profile\uFF0C\u8BF7\u5148\u65B0\u589E\u4E00\u4E2A\u3002", cls: "upload-history-empty" });
+      return;
+    }
+    new import_obsidian6.Setting(containerEl).setName("\u542F\u7528\u4EFB\u52A1\u8868").setDesc("\u5173\u95ED\u540E\uFF0C\u8BE5 Profile \u4E0D\u53C2\u4E0E\u81EA\u52A8\u5339\u914D\u6216\u5B9A\u65F6\u540C\u6B65\u3002").addToggle((toggle) => toggle.setValue(activeProfile.enabled !== false).onChange(async (value) => {
+      activeProfile.enabled = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("\u540D\u79F0").setDesc("\u7528\u4E8E\u8BBE\u7F6E\u9875\u663E\u793A\u548C\u540C\u6B65\u63D0\u793A\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1AIOTO \u4EFB\u52A1\u8868").setValue(activeProfile.name || "").onChange(async (value) => {
+      activeProfile.name = value.trim() || activeProfile.id;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("Profile ID").setDesc("\u4F5C\u4E3A\u672C\u5730\u6620\u5C04\u548C frontmatter \u4E2D\u7684\u7A33\u5B9A\u6807\u8BC6\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1Aioto-task").setValue(activeProfile.id || "").onChange(async (value) => {
+      const nextId = value.trim();
+      if (!nextId) {
+        return;
+      }
+      const exists = profiles.some((profile, index) => index !== activeIndex && profile.id === nextId);
+      if (exists) {
+        new import_obsidian6.Notice("\u274C Profile ID \u4E0D\u80FD\u91CD\u590D");
+        return;
+      }
+      activeProfile.id = nextId;
+      this.plugin.settings.activeBitableProfileId = nextId;
+      await this.plugin.saveSettings();
+    }));
+    const normalizeBitableInput = (input) => String(input || "").trim().replace(/^[\s"'“”‘’]+/, "").replace(/[\s"'“”‘’]+$/, "").trim();
+    const extractBitableFromText = (text) => {
+      var _a2, _b, _c, _d;
+      const s = String(text || "");
+      const appTokenFromApps = (_a2 = s.match(/\/apps\/([A-Za-z0-9_-]+)/)) == null ? void 0 : _a2[1];
+      const appTokenFromBase = (_b = s.match(/\/(?:base|app)\/([A-Za-z0-9_-]+)/)) == null ? void 0 : _b[1];
+      const tableId = (_c = s.match(/\b(tbl[A-Za-z0-9_-]+)\b/)) == null ? void 0 : _c[1];
+      const viewId = (_d = s.match(/\b(vew[A-Za-z0-9_-]+)\b/)) == null ? void 0 : _d[1];
+      return {
+        appToken: appTokenFromApps || appTokenFromBase,
+        tableId,
+        viewId
+      };
     };
-    resetButton.onclick = async () => {
-      await saveMapping({});
-    };
+    new import_obsidian6.Setting(containerEl).setName("Bitable App Token").setDesc("\u4EFB\u52A1\u8868\u6240\u5C5E Base \u7684 appToken\u3002").addText((text) => text.setPlaceholder("bascn... \u6216 Base \u94FE\u63A5").setValue(activeProfile.appToken || "").onChange(async (value) => {
+      const cleaned = normalizeBitableInput(value);
+      const extracted = extractBitableFromText(cleaned);
+      const prev = activeProfile.appToken || "";
+      activeProfile.appToken = (extracted.appToken || cleaned).trim();
+      if (extracted.tableId) {
+        activeProfile.tableId = extracted.tableId.trim();
+      }
+      if (extracted.viewId) {
+        activeProfile.viewId = extracted.viewId.trim();
+      }
+      if ((activeProfile.appToken || "") !== prev) {
+        activeProfile.tableOptionsCache = [];
+        activeProfile.fieldNamesCache = [];
+      }
+      await this.plugin.saveSettings();
+      this.display();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("Bitable Table ID").setDesc("\u4EFB\u52A1\u8868\u6240\u5728\u7684\u6570\u636E\u8868 ID\u3002").addText((text) => text.setPlaceholder("tbl...").setValue(activeProfile.tableId || "").onChange(async (value) => {
+      const cleaned = normalizeBitableInput(value);
+      const extracted = extractBitableFromText(cleaned);
+      const prev = activeProfile.tableId || "";
+      activeProfile.tableId = (extracted.tableId || cleaned).trim();
+      if (extracted.appToken) {
+        activeProfile.appToken = extracted.appToken.trim();
+      }
+      if (extracted.viewId) {
+        activeProfile.viewId = extracted.viewId.trim();
+      }
+      if ((activeProfile.tableId || "") !== prev) {
+        activeProfile.fieldNamesCache = [];
+      }
+      await this.plugin.saveSettings();
+      this.display();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("View ID").setDesc("\u53EF\u9009\uFF1B\u4EC5\u540C\u6B65\u6307\u5B9A\u89C6\u56FE\u4E2D\u7684\u8BB0\u5F55\u3002").addText((text) => text.setPlaceholder("vew...").setValue(activeProfile.viewId || "").onChange(async (value) => {
+      activeProfile.viewId = normalizeBitableInput(value);
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("\u76EE\u6807\u76EE\u5F55").setDesc("\u6BCF\u6761\u8BB0\u5F55\u4F1A\u6620\u5C04\u4E3A\u8BE5\u76EE\u5F55\u4E2D\u7684\u4E00\u4E2A Markdown \u6587\u4EF6\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1AIOTO/Tasks").setValue(activeProfile.targetDir || "").onChange(async (value) => {
+      activeProfile.targetDir = value.trim();
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("\u6587\u4EF6\u540D\u6A21\u677F").setDesc("\u652F\u6301 {{title}} \u548C {{recordId}}\u3002").addText((text) => text.setPlaceholder("{{title}}").setValue(activeProfile.fileNameTemplate || "{{title}}").onChange(async (value) => {
+      activeProfile.fileNameTemplate = value.trim() || "{{title}}";
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("\u6B63\u6587\u6A21\u677F").setDesc("\u63A7\u5236\u8FDC\u7AEF\u6B63\u6587\u7C7B\u5B57\u6BB5\u5199\u5165\u53D7\u63A7\u533A\u5757\u65F6\u7684\u6A21\u677F\u3002").addTextArea((text) => text.setPlaceholder("{{body}}").setValue(activeProfile.bodyTemplate || "{{body}}").onChange(async (value) => {
+      activeProfile.bodyTemplate = value || "{{body}}";
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("\u5141\u8BB8\u56DE\u5199\u53D7\u63A7\u533A\u5757\u5916\u6B63\u6587").setDesc("\u5F00\u542F\u540E\uFF0C\u53EF\u5C06\u53D7\u63A7\u533A\u5757\u5916\u7684\u672C\u5730\u6B63\u6587\u4E00\u8D77\u56DE\u5199\u5230\u98DE\u4E66\u6B63\u6587\u7C7B\u5B57\u6BB5\u3002").addToggle((toggle) => toggle.setValue(!!activeProfile.syncUncontrolledBody).onChange(async (value) => {
+      activeProfile.syncUncontrolledBody = value;
+      await this.plugin.saveSettings();
+    }));
+    containerEl.createEl("h4", { text: "\u72B6\u6001\u6620\u5C04" });
+    const statusRows = [
+      ["todo", "\u672C\u5730 todo"],
+      ["doing", "\u672C\u5730 doing"],
+      ["done", "\u672C\u5730 done"],
+      ["cancelled", "\u672C\u5730 cancelled"]
+    ];
+    for (const [localStatus, label] of statusRows) {
+      new import_obsidian6.Setting(containerEl).setName(label).setDesc("\u586B\u5199\u98DE\u4E66\u8868\u4E2D\u5BF9\u5E94\u7684\u72B6\u6001\u503C\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1A\u8FDB\u884C\u4E2D").setValue(this.getProfileRemoteStatusValue(activeProfile, localStatus)).onChange(async (value) => {
+        this.setProfileRemoteStatusValue(activeProfile, localStatus, value);
+        await this.plugin.saveSettings();
+      }));
+    }
+    containerEl.createEl("h4", { text: "\u5B9A\u65F6\u540C\u6B65" });
+    new import_obsidian6.Setting(containerEl).setName("\u542F\u7528\u8BE5\u4EFB\u52A1\u8868\u7684\u5B9A\u65F6\u540C\u6B65").setDesc("\u6309\u8BE5 Profile \u81EA\u5DF1\u7684\u9891\u7387\u4ECE\u98DE\u4E66\u62C9\u53D6\u8BB0\u5F55\u5E76\u66F4\u65B0\u672C\u5730\u6587\u4EF6\u3002").addToggle((toggle) => toggle.setValue(!!activeProfile.scheduledSyncEnabled).onChange(async (value) => {
+      activeProfile.scheduledSyncEnabled = value;
+      await this.plugin.saveSettings();
+      this.display();
+    })).addButton((button) => button.setButtonText("\u7ACB\u5373\u540C\u6B65\u4E00\u6B21").setCta().onClick(async () => {
+      await this.plugin.runScheduledBitableProfileSync(activeProfile.id, "manual", true);
+    }));
+    if (activeProfile.scheduledSyncEnabled) {
+      new import_obsidian6.Setting(containerEl).setName("\u540C\u6B65\u95F4\u9694\uFF08\u5206\u949F\uFF09").setDesc("\u6700\u5C0F 5 \u5206\u949F\uFF0C\u9ED8\u8BA4 30 \u5206\u949F\u3002").addText((text) => text.setPlaceholder("30").setValue(String(activeProfile.scheduledSyncIntervalMinutes || 30)).onChange(async (value) => {
+        const parsed = Number(value);
+        activeProfile.scheduledSyncIntervalMinutes = Number.isFinite(parsed) ? Math.max(5, Math.min(24 * 60, Math.round(parsed))) : 30;
+        await this.plugin.saveSettings();
+      }));
+      new import_obsidian6.Setting(containerEl).setName("\u542F\u52A8\u540E\u6267\u884C\u4E00\u6B21").setDesc("Obsidian \u542F\u52A8\u7EA6 15 \u79D2\u540E\u81EA\u52A8\u8DD1\u4E00\u6B21\u8BE5\u4EFB\u52A1\u8868\u540C\u6B65\u3002").addToggle((toggle) => toggle.setValue(!!activeProfile.scheduledSyncRunOnStartup).onChange(async (value) => {
+        activeProfile.scheduledSyncRunOnStartup = value;
+        await this.plugin.saveSettings();
+      }));
+    }
+    containerEl.createEl("h4", { text: "\u5B57\u6BB5\u6620\u5C04" });
+    this.renderProfileTableAssistant(containerEl, activeProfile);
+    this.renderProfileFieldMappingHint(containerEl, activeProfile);
+    this.renderProfileFieldMappingAssistant(containerEl, activeProfile);
   }
-  renderBitableFieldMappingRows(containerEl, fieldNames, parseMapping, saveMapping) {
-    const logicalFields = [
+  getLegacyBitableLogicalFields() {
+    return [
       ["title", "\u6807\u9898"],
       ["content", "\u6B63\u6587"],
       ["link", "\u98DE\u4E66\u94FE\u63A5"],
@@ -10072,6 +11231,243 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       ["value", "\u672C\u5730\u8DEF\u5F84"],
       ["recordId", "\u8BB0\u5F55 ID"]
     ];
+  }
+  getProfileLogicalFields() {
+    return [
+      ["title", "\u6807\u9898"],
+      ["body", "\u53D7\u63A7\u6B63\u6587"],
+      ["stage", "stage"],
+      ["status", "status"],
+      ["ai_scope", "ai_scope"],
+      ["owner", "owner"],
+      ["project", "project"],
+      ["source", "source"],
+      ["related", "related"],
+      ["next_action", "next_action"],
+      ["review_required", "review_required"],
+      ["priority", "feishu_priority"],
+      ["category", "feishu_category"]
+    ];
+  }
+  parseSingleValueFieldMapping(mapping) {
+    if (!mapping || typeof mapping !== "object") {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(mapping).map(([key, value]) => {
+        if (Array.isArray(value)) {
+          return [String(key || "").trim(), String(value[0] || "").trim()];
+        }
+        return [String(key || "").trim(), String(value || "").trim()];
+      }).filter(([key, value]) => key && value)
+    );
+  }
+  getLegacyBitableUiBinding() {
+    const parseMapping = () => {
+      const raw = String(this.plugin.settings.bitableFieldMapping || "").trim();
+      if (!raw)
+        return {};
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return {};
+        }
+        return this.parseSingleValueFieldMapping(parsed);
+      } catch (e) {
+        return {};
+      }
+    };
+    return {
+      getAppToken: () => String(this.plugin.settings.bitableAppToken || "").trim(),
+      getTableId: () => String(this.plugin.settings.bitableTableId || "").trim(),
+      setTableId: (value) => {
+        this.plugin.settings.bitableTableId = value;
+        this.plugin.settings.bitableFieldNamesCache = [];
+      },
+      getTableOptions: () => this.getCachedBitableTableOptions(),
+      setTableOptions: (tables) => {
+        this.setCachedBitableTableOptions(tables);
+      },
+      getFieldNames: () => this.getCachedBitableFieldNames(),
+      setFieldNames: (names) => {
+        this.setCachedBitableFieldNames(names);
+      },
+      parseMapping,
+      saveMapping: async (mapping) => {
+        this.plugin.settings.bitableFieldMapping = Object.keys(mapping).length > 0 ? JSON.stringify(mapping, null, 2) : "";
+        await this.plugin.saveSettings();
+        this.display();
+      },
+      logicalFields: this.getLegacyBitableLogicalFields(),
+      defaultHint: "\u5F53\u524D\u4F7F\u7528\u9ED8\u8BA4\u5B57\u6BB5\u540D\uFF1Atitle\u3001content\u3001status\u3001link\u3001created\u3001updated\u3001tags\u3001excerpt\u3001author\u3001aliases\u3001slug\u3001folder\u3001value\u3001recordId\u3002",
+      onChange: async () => {
+        await this.plugin.saveSettings();
+        this.display();
+      }
+    };
+  }
+  getProfileBitableUiBinding(profile) {
+    return {
+      getAppToken: () => String(profile.appToken || "").trim(),
+      getTableId: () => String(profile.tableId || "").trim(),
+      setTableId: (value) => {
+        profile.tableId = value;
+        profile.fieldNamesCache = [];
+      },
+      getTableOptions: () => Array.isArray(profile.tableOptionsCache) ? profile.tableOptionsCache : [],
+      setTableOptions: (tables) => {
+        profile.tableOptionsCache = tables;
+      },
+      getFieldNames: () => Array.isArray(profile.fieldNamesCache) ? profile.fieldNamesCache : [],
+      setFieldNames: (names) => {
+        profile.fieldNamesCache = names;
+      },
+      parseMapping: () => this.parseSingleValueFieldMapping(profile.fieldMapping),
+      saveMapping: async (mapping) => {
+        profile.fieldMapping = mapping;
+        await this.plugin.saveSettings();
+        this.display();
+      },
+      logicalFields: this.getProfileLogicalFields(),
+      defaultHint: "\u5C06\u4EFB\u52A1\u5B57\u6BB5\u6620\u5C04\u5230\u98DE\u4E66\u8868\u5B57\u6BB5\uFF1Bfrontmatter \u4E0E\u53D7\u63A7\u6B63\u6587\u90FD\u901A\u8FC7\u8FD9\u91CC\u9009\u62E9\u5BF9\u5E94\u5217\u3002",
+      onChange: async () => {
+        await this.plugin.saveSettings();
+        this.display();
+      }
+    };
+  }
+  renderSharedBitableTableAssistant(containerEl, binding) {
+    const panel = containerEl.createDiv({ cls: "bitable-field-mapping-panel" });
+    const toolbar = panel.createDiv({ cls: "bitable-field-mapping-toolbar" });
+    toolbar.createDiv({ text: "\u6570\u636E\u8868\u9009\u62E9\u52A9\u624B", cls: "bitable-field-mapping-title" });
+    const actions = toolbar.createDiv({ cls: "bitable-field-mapping-actions" });
+    const loadButton = actions.createEl("button", { text: "\u8BFB\u53D6\u6570\u636E\u8868" });
+    const hint = panel.createDiv({ cls: "bitable-field-mapping-hint" });
+    const tables = binding.getTableOptions();
+    const currentTableId = binding.getTableId();
+    if (!tables.length) {
+      hint.setText("\u5148\u586B\u5199\u6216\u7C98\u8D34 App Token\uFF0C\u518D\u70B9\u51FB\u201C\u8BFB\u53D6\u6570\u636E\u8868\u201D\u3002\u5982\u679C\u8BFB\u53D6\u5931\u8D25\uFF0C\u4ECD\u53EF\u624B\u52A8\u586B\u5199 Table ID\u3002");
+    } else {
+      const grid = panel.createDiv({ cls: "bitable-field-mapping-grid" });
+      grid.createDiv({ text: "\u9009\u62E9\u6570\u636E\u8868", cls: "bitable-field-mapping-label" });
+      const select = grid.createEl("select", { cls: "bitable-field-mapping-select" });
+      select.createEl("option", { text: "\u4FDD\u7559\u624B\u52A8\u586B\u5199\u7684 Table ID", value: "" });
+      for (const option of tables) {
+        const label = option.name ? `${option.name} (${option.tableId})` : option.tableId;
+        select.createEl("option", { text: label, value: option.tableId });
+      }
+      if (currentTableId && tables.some((option) => option.tableId === currentTableId)) {
+        select.value = currentTableId;
+      }
+      select.addEventListener("change", async () => {
+        const next = String(select.value || "").trim();
+        if (next && next !== binding.getTableId()) {
+          binding.setTableId(next);
+          await binding.onChange();
+        }
+      });
+      hint.setText(`\u5DF2\u8BFB\u53D6 ${tables.length} \u5F20\u6570\u636E\u8868${currentTableId ? `\uFF1B\u5F53\u524D Table ID\uFF1A${currentTableId}` : ""}`);
+    }
+    loadButton.onclick = async () => {
+      try {
+        if (!binding.getAppToken()) {
+          new import_obsidian6.Notice("\u274C \u8BF7\u5148\u586B\u5199 Bitable App Token");
+          return;
+        }
+        loadButton.disabled = true;
+        loadButton.textContent = "\u8BFB\u53D6\u4E2D...";
+        const result = await this.plugin.feishuApi.getBitableTables(binding.getAppToken());
+        if (!result.success || !result.tables) {
+          new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u6570\u636E\u8868\u5931\u8D25\uFF1A${result.error || "\u672A\u77E5\u9519\u8BEF"}`);
+          return;
+        }
+        binding.setTableOptions(result.tables);
+        if (!binding.getTableId() && result.tables.length === 1) {
+          binding.setTableId(result.tables[0].tableId);
+        }
+        await binding.onChange();
+        new import_obsidian6.Notice(`\u2705 \u5DF2\u8BFB\u53D6 ${result.tables.length} \u5F20\u6570\u636E\u8868`);
+      } catch (error) {
+        new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u6570\u636E\u8868\u5931\u8D25\uFF1A${error.message}`);
+      } finally {
+        loadButton.disabled = false;
+        loadButton.textContent = "\u8BFB\u53D6\u6570\u636E\u8868";
+      }
+    };
+  }
+  renderSharedBitableFieldMappingHint(containerEl, binding) {
+    const mapping = binding.parseMapping();
+    const hint = containerEl.createDiv({ cls: "setting-item-description" });
+    hint.style.marginTop = "-8px";
+    hint.style.marginBottom = "10px";
+    if (!Object.keys(mapping).length) {
+      hint.setText(binding.defaultHint);
+      return;
+    }
+    hint.setText(`\u5F53\u524D\u5B57\u6BB5\u6620\u5C04\u6709\u6548\uFF1A${Object.keys(mapping).length} \u9879\u3002`);
+  }
+  renderSharedBitableFieldMappingAssistant(containerEl, binding) {
+    const panel = containerEl.createDiv({ cls: "bitable-field-mapping-panel" });
+    const toolbar = panel.createDiv({ cls: "bitable-field-mapping-toolbar" });
+    toolbar.createDiv({ text: "\u5B57\u6BB5\u6620\u5C04\u52A9\u624B", cls: "bitable-field-mapping-title" });
+    const actions = toolbar.createDiv({ cls: "bitable-field-mapping-actions" });
+    const loadButton = actions.createEl("button", { text: "\u8BFB\u53D6\u8868\u683C\u5B57\u6BB5" });
+    const resetButton = actions.createEl("button", { text: "\u6E05\u7A7A\u6620\u5C04" });
+    const hint = panel.createDiv({ cls: "bitable-field-mapping-hint" });
+    const currentFields = binding.getFieldNames();
+    if (!currentFields.length) {
+      hint.setText("\u5148\u70B9\u51FB\u201C\u8BFB\u53D6\u8868\u683C\u5B57\u6BB5\u201D\uFF0C\u518D\u7528\u4E0B\u62C9\u6846\u4E3A\u903B\u8F91\u5B57\u6BB5\u9009\u62E9\u5BF9\u5E94\u7684\u98DE\u4E66\u8868\u5B57\u6BB5\u3002");
+    } else {
+      this.renderBitableFieldMappingRows(panel, currentFields, binding.parseMapping, binding.saveMapping, binding.logicalFields);
+      hint.setText(`\u5DF2\u8BFB\u53D6 ${currentFields.length} \u4E2A\u8868\u683C\u5B57\u6BB5\u3002`);
+    }
+    loadButton.onclick = async () => {
+      try {
+        if (!binding.getAppToken() || !binding.getTableId()) {
+          new import_obsidian6.Notice("\u274C \u8BF7\u5148\u586B\u5199 Bitable App Token \u548C Table ID");
+          return;
+        }
+        loadButton.disabled = true;
+        loadButton.textContent = "\u8BFB\u53D6\u4E2D...";
+        const result = await this.plugin.feishuApi.getBitableTableFields(binding.getAppToken(), binding.getTableId());
+        if (!result.success || !result.fields) {
+          new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u5B57\u6BB5\u5931\u8D25\uFF1A${result.error || "\u672A\u77E5\u9519\u8BEF"}`);
+          return;
+        }
+        const names = result.fields.map((field) => field.name).filter((name) => !!name);
+        binding.setFieldNames(names);
+        await binding.onChange();
+        new import_obsidian6.Notice(`\u2705 \u5DF2\u8BFB\u53D6 ${names.length} \u4E2A\u8868\u683C\u5B57\u6BB5`);
+      } catch (error) {
+        new import_obsidian6.Notice(`\u274C \u8BFB\u53D6\u5B57\u6BB5\u5931\u8D25\uFF1A${error.message}`);
+      } finally {
+        loadButton.disabled = false;
+        loadButton.textContent = "\u8BFB\u53D6\u8868\u683C\u5B57\u6BB5";
+      }
+    };
+    resetButton.onclick = async () => {
+      await binding.saveMapping({});
+    };
+  }
+  renderProfileTableAssistant(containerEl, profile) {
+    this.renderSharedBitableTableAssistant(containerEl, this.getProfileBitableUiBinding(profile));
+  }
+  renderProfileFieldMappingHint(containerEl, profile) {
+    this.renderSharedBitableFieldMappingHint(containerEl, this.getProfileBitableUiBinding(profile));
+  }
+  renderProfileFieldMappingAssistant(containerEl, profile) {
+    this.renderSharedBitableFieldMappingAssistant(containerEl, this.getProfileBitableUiBinding(profile));
+  }
+  renderBitableTableAssistant(containerEl) {
+    this.renderSharedBitableTableAssistant(containerEl, this.getLegacyBitableUiBinding());
+  }
+  renderBitableFieldMappingHint(containerEl) {
+    this.renderSharedBitableFieldMappingHint(containerEl, this.getLegacyBitableUiBinding());
+  }
+  renderBitableFieldMappingAssistant(containerEl) {
+    this.renderSharedBitableFieldMappingAssistant(containerEl, this.getLegacyBitableUiBinding());
+  }
+  renderBitableFieldMappingRows(containerEl, fieldNames, parseMapping, saveMapping, logicalFields = this.getLegacyBitableLogicalFields()) {
     const grid = containerEl.createDiv({ cls: "bitable-field-mapping-grid" });
     const mapping = parseMapping();
     for (const [logicalKey, label] of logicalFields) {
@@ -10097,6 +11493,16 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
   getCachedBitableFieldNames() {
     const raw = this.plugin.settings.bitableFieldNamesCache;
     return Array.isArray(raw) ? raw.map((name) => String(name)).filter((name) => !!name) : [];
+  }
+  getBitableProfilesForSettings() {
+    var _a;
+    const raw = this.plugin.settings.bitableProfiles;
+    const profiles = Array.isArray(raw) ? raw : [];
+    this.plugin.settings.bitableProfiles = profiles;
+    if (!this.plugin.settings.activeBitableProfileId || !profiles.some((profile) => profile.id === this.plugin.settings.activeBitableProfileId)) {
+      this.plugin.settings.activeBitableProfileId = ((_a = profiles[0]) == null ? void 0 : _a.id) || "";
+    }
+    return profiles;
   }
   getCachedBitableTableOptions() {
     const raw = this.plugin.settings.bitableTableOptionsCache;
@@ -10149,89 +11555,77 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
   }
   renderHistoryPanel(containerEl) {
     containerEl.createEl("h3", { text: "\u5DF2\u4E0A\u4F20\u6587\u6863\u5217\u8868" });
-    const history = Array.isArray(this.plugin.settings.uploadHistory) ? this.plugin.settings.uploadHistory : [];
-    if (history.length === 0) {
+    const entries = this.buildHistoryEntries();
+    const states = Array.isArray(this.plugin.settings.syncStates) ? this.plugin.settings.syncStates : [];
+    if (entries.length === 0) {
       containerEl.createEl("p", { text: "\u6682\u65E0\u4E0A\u4F20\u8BB0\u5F55", cls: "upload-history-empty" });
       return;
     }
+    this.renderHistorySearch(containerEl);
+    const counts = getSyncStatusCounts(states);
+    counts.localDeleted = entries.filter((entry) => this.isLocalDeletedEntry(entry)).length;
+    const filteredEntries = this.filterHistoryEntries(entries);
+    const visibleStates = filteredEntries.map((entry) => entry.state).filter((state) => !!state);
+    const overview = new import_obsidian6.Setting(containerEl).setName("\u6587\u6863\u4E0E\u540C\u6B65\u6982\u89C8").setDesc(
+      states.length > 0 ? `\u5171 ${entries.length} \u6761\u6587\u6863\u8BB0\u5F55\uFF0C\u5176\u4E2D\u540C\u6B65\u8BCA\u65AD ${states.length} \u6761\uFF0C\u9700\u5173\u6CE8 ${counts.problem} \u6761\uFF0C\u51B2\u7A81 ${counts.conflict} \u6761\uFF0C\u9519\u8BEF ${counts.error} \u6761\uFF0C\u672C\u5730\u5DF2\u5220\u9664 ${counts.localDeleted} \u6761\u3002` : `\u5171 ${entries.length} \u6761\u6587\u6863\u8BB0\u5F55\u3002\u4E0A\u4F20\u6216\u6267\u884C\u540C\u6B65\u540E\uFF0C\u8FD9\u91CC\u4F1A\u663E\u793A\u540C\u6B65\u8BCA\u65AD\u3002`
+    );
+    if (states.length > 0) {
+      overview.addButton((btn) => {
+        btn.setButtonText("\u6E05\u7A7A\u540C\u6B65\u8BCA\u65AD").setTooltip("\u53EA\u6E05\u7A7A\u8BCA\u65AD\u72B6\u6001\uFF0C\u4E0D\u5220\u9664\u6587\u6863\u8BB0\u5F55").setWarning().onClick(async () => {
+          this.plugin.settings.syncStates = [];
+          this.clearHistorySelection();
+          await this.plugin.saveSettings();
+          new import_obsidian6.Notice("\u2705 \u5DF2\u6E05\u7A7A\u540C\u6B65\u8BCA\u65AD\uFF0C\u6587\u6863\u8BB0\u5F55\u4FDD\u7559");
+          this.display();
+        });
+      });
+    }
+    this.renderHistoryBatchToolbar(containerEl, filteredEntries);
+    this.renderHistoryStatusToolbar(containerEl, counts, filteredEntries.length, entries.length, visibleStates);
+    const list = containerEl.createDiv("upload-history-container");
+    if (filteredEntries.length === 0) {
+      list.createEl("p", {
+        text: this.historySearchQuery.trim() ? "\u6CA1\u6709\u627E\u5230\u5339\u914D\u7684\u6587\u6863\u6216\u540C\u6B65\u8BB0\u5F55" : "\u5F53\u524D\u7B5B\u9009\u4E0B\u6CA1\u6709\u6587\u6863\u8BB0\u5F55",
+        cls: "upload-history-empty"
+      });
+      return;
+    }
+    filteredEntries.forEach((entry) => {
+      this.renderHistoryItem(list, entry);
+    });
+  }
+  renderHistorySearch(containerEl) {
     const searchContainer = containerEl.createDiv({ cls: "share-search-container" });
     const searchInput = searchContainer.createEl("input", {
       type: "text",
-      placeholder: "\u641C\u7D22\u6807\u9898\u6216\u94FE\u63A5...",
+      placeholder: "\u641C\u7D22\u6807\u9898\u3001\u94FE\u63A5\u3001\u9519\u8BEF\u6216\u540C\u6B65\u7EC6\u8282...",
       cls: "share-search-input"
     });
     searchInput.value = this.historySearchQuery;
     searchInput.addEventListener("input", (e) => {
       this.historySearchQuery = e.target.value;
-      this.display();
-    });
-    const q = (this.historySearchQuery || "").trim().toLowerCase();
-    const items = q ? history.filter((h) => (h.title || "").toLowerCase().includes(q) || (h.url || "").toLowerCase().includes(q) || (h.docToken || "").toLowerCase().includes(q)) : history;
-    if (items.length === 0) {
-      containerEl.createEl("p", { text: "\u6CA1\u6709\u627E\u5230\u5339\u914D\u7684\u8BB0\u5F55", cls: "upload-history-empty" });
-      return;
-    }
-    this.renderHistoryBatchToolbar(containerEl, items);
-    const list = containerEl.createDiv("upload-history-container");
-    items.forEach((item) => {
-      this.renderHistoryItem(list, item);
-    });
-  }
-  renderSyncStatusPanel(containerEl) {
-    containerEl.createEl("h3", { text: "\u540C\u6B65\u72B6\u6001" });
-    const states = Array.isArray(this.plugin.settings.syncStates) ? this.plugin.settings.syncStates : [];
-    if (states.length === 0) {
-      containerEl.createEl("p", { text: "\u6682\u65E0\u540C\u6B65\u72B6\u6001\u8BB0\u5F55", cls: "upload-history-empty" });
-      return;
-    }
-    const counts = getSyncStatusCounts(states);
-    this.renderSyncStatusSearch(containerEl);
-    const filteredStates = searchSyncStates(filterSyncStates(states, this.syncStatusFilter), this.syncStatusSearchQuery);
-    new import_obsidian6.Setting(containerEl).setName("\u72B6\u6001\u8BB0\u5F55").setDesc(`\u5171 ${states.length} \u6761\uFF0C\u9700\u5173\u6CE8 ${counts.problem} \u6761\uFF0C\u51B2\u7A81 ${counts.conflict} \u6761\uFF0C\u9519\u8BEF ${counts.error} \u6761\u3002\u7528\u4E8E\u5224\u65AD\u672C\u5730/\u98DE\u4E66\u662F\u5426\u6709\u672A\u540C\u6B65\u6539\u52A8\u3002`).addButton((btn) => {
-      btn.setButtonText("\u6E05\u7A7A\u72B6\u6001").setWarning().onClick(async () => {
-        this.plugin.settings.syncStates = [];
-        await this.plugin.saveSettings();
-        new import_obsidian6.Notice("\u2705 \u5DF2\u6E05\u7A7A\u540C\u6B65\u72B6\u6001");
-        this.display();
-      });
-    });
-    this.renderSyncStatusToolbar(containerEl, counts, filteredStates, states.length);
-    const list = containerEl.createDiv("upload-history-container");
-    const sorted = sortSyncStates(filteredStates);
-    if (sorted.length === 0) {
-      list.createEl("p", { text: this.syncStatusSearchQuery.trim() ? "\u6CA1\u6709\u627E\u5230\u5339\u914D\u7684\u540C\u6B65\u72B6\u6001\u8BB0\u5F55" : "\u5F53\u524D\u7B5B\u9009\u4E0B\u6CA1\u6709\u540C\u6B65\u72B6\u6001\u8BB0\u5F55", cls: "upload-history-empty" });
-      return;
-    }
-    sorted.forEach((state) => this.renderSyncStatusItem(list, state));
-  }
-  renderSyncStatusSearch(containerEl) {
-    const searchContainer = containerEl.createDiv({ cls: "share-search-container" });
-    const searchInput = searchContainer.createEl("input", {
-      type: "text",
-      placeholder: "\u641C\u7D22\u6587\u4EF6\u3001\u94FE\u63A5\u3001\u9519\u8BEF\u3001\u5EFA\u8BAE\u6216\u72B6\u6001\u7EC6\u8282...",
-      cls: "share-search-input"
-    });
-    searchInput.value = this.syncStatusSearchQuery;
-    searchInput.addEventListener("input", (e) => {
-      this.syncStatusSearchQuery = e.target.value;
+      this.clearHistorySelection();
       this.display();
     });
   }
-  renderSyncStatusToolbar(containerEl, counts, visibleStates, totalCount) {
+  renderHistoryStatusToolbar(containerEl, counts, visibleEntryCount, totalEntryCount, visibleStates) {
     const toolbar = containerEl.createDiv({ cls: "sync-status-toolbar" });
     const filters = toolbar.createDiv({ cls: "sync-status-filter-group" });
     const options = [
-      { key: "all", label: `\u5168\u90E8 ${counts.all}` },
-      { key: "problem", label: `\u9700\u5173\u6CE8 ${counts.problem}` },
-      { key: "conflict", label: `\u51B2\u7A81 ${counts.conflict}` },
-      { key: "error", label: `\u9519\u8BEF ${counts.error}` },
-      { key: "synced", label: `\u5DF2\u540C\u6B65 ${counts.synced}` }
+      { key: "all", label: `\u5168\u90E8 ${totalEntryCount}`, description: "\u67E5\u770B\u5F53\u524D\u5217\u8868\u4E2D\u7684\u5168\u90E8\u8BB0\u5F55\u3002" },
+      { key: "problem", label: `\u9700\u5173\u6CE8 ${counts.problem}`, description: "\u67E5\u770B\u9700\u8981\u4F18\u5148\u5904\u7406\u7684\u8BB0\u5F55\u603B\u5165\u53E3\u3002" },
+      { key: "conflict", label: `\u51B2\u7A81 ${counts.conflict}`, description: "\u67E5\u770B\u672C\u5730\u548C\u8FDC\u7AEF\u90FD\u53D1\u751F\u53D8\u5316\uFF0C\u9700\u8981\u4EBA\u5DE5\u51B3\u7B56\u7684\u8BB0\u5F55\u3002" },
+      { key: "error", label: `\u9519\u8BEF ${counts.error}`, description: "\u67E5\u770B\u540C\u6B65\u5931\u8D25\u3001\u9700\u8981\u91CD\u8BD5\u6216\u6392\u67E5\u7684\u8BB0\u5F55\u3002" },
+      { key: "localDeleted", label: `\u672C\u5730\u5DF2\u5220\u9664 ${counts.localDeleted}`, description: "\u67E5\u770B\u672C\u5730\u6587\u4EF6\u5DF2\u5220\u9664\uFF0C\u901A\u5E38\u9700\u8981\u6E05\u7406\u672C\u5730\u6620\u5C04\u7684\u8BB0\u5F55\u3002" },
+      { key: "remoteDeleted", label: `\u8FDC\u7AEF\u5DF2\u5220\u9664 ${counts.remoteDeleted}`, description: "\u67E5\u770B\u8FDC\u7AEF\u8BB0\u5F55\u5DF2\u5220\u9664\u3001\u672C\u5730\u6587\u4EF6\u6682\u65F6\u4FDD\u7559\u7684\u50F5\u5C38\u8BB0\u5F55\u3002" },
+      { key: "synced", label: `\u5DF2\u540C\u6B65 ${counts.synced}`, description: "\u53EA\u770B\u5F53\u524D\u72B6\u6001\u5065\u5EB7\u7684\u5DF2\u540C\u6B65\u8BB0\u5F55\u3002" }
     ];
     options.forEach((option) => {
       const btn = filters.createEl("button", {
         text: option.label,
         cls: "sync-status-filter-btn"
       });
+      btn.setAttribute("title", option.description);
       if (this.syncStatusFilter === option.key) {
         btn.addClass("is-active");
       }
@@ -10240,6 +11634,7 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       }
       btn.addEventListener("click", () => {
         this.syncStatusFilter = option.key;
+        this.clearHistorySelection();
         this.display();
       });
     });
@@ -10255,9 +11650,148 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       await this.smartSyncVisibleStates(syncableStates);
     });
     toolbar.createEl("span", {
-      text: `\u5F53\u524D\u663E\u793A ${visibleStates.length}/${totalCount} \u6761`,
+      text: `\u5F53\u524D\u663E\u793A ${visibleEntryCount}/${totalEntryCount} \u6761\u6587\u6863`,
       cls: "sync-status-summary"
     });
+  }
+  buildHistoryEntries() {
+    const history = Array.isArray(this.plugin.settings.uploadHistory) ? this.plugin.settings.uploadHistory : [];
+    const states = Array.isArray(this.plugin.settings.syncStates) ? this.plugin.settings.syncStates : [];
+    const entries = [];
+    const lookup = /* @__PURE__ */ new Map();
+    const upsertEntry = (historyItem, stateItem) => {
+      const candidateKeys = this.getHistoryEntryLookupKeys(historyItem, stateItem);
+      let entry = candidateKeys.map((key) => lookup.get(key)).find((item) => !!item);
+      if (!entry) {
+        entry = this.createHistoryEntry(candidateKeys[0] || `history:${entries.length + 1}`);
+        entries.push(entry);
+      }
+      if (historyItem) {
+        entry.history = historyItem;
+      }
+      if (stateItem) {
+        entry.state = stateItem;
+      }
+      this.syncHistoryEntry(entry);
+      this.getHistoryEntryLookupKeys(entry.history, entry.state).forEach((key) => lookup.set(key, entry));
+    };
+    history.forEach((item) => upsertEntry(item));
+    sortSyncStates(states).forEach((state) => upsertEntry(void 0, state));
+    return entries;
+  }
+  createHistoryEntry(key) {
+    return {
+      key,
+      filePath: "",
+      title: "\u672A\u547D\u540D\u6587\u6863",
+      docToken: "",
+      url: "",
+      bitableRecordId: ""
+    };
+  }
+  syncHistoryEntry(entry) {
+    const history = entry.history;
+    const state = entry.state;
+    entry.filePath = String((history == null ? void 0 : history.filePath) || (state == null ? void 0 : state.filePath) || "").trim();
+    entry.title = String((history == null ? void 0 : history.title) || (state == null ? void 0 : state.title) || (state == null ? void 0 : state.filePath) || (history == null ? void 0 : history.docToken) || (state == null ? void 0 : state.docToken) || "\u672A\u547D\u540D\u6587\u6863").trim();
+    entry.docToken = String((history == null ? void 0 : history.docToken) || (state == null ? void 0 : state.docToken) || "").trim();
+    entry.url = String((history == null ? void 0 : history.url) || (state == null ? void 0 : state.url) || (entry.docToken ? `https://feishu.cn/docx/${entry.docToken}` : "")).trim();
+    entry.bitableRecordId = String((history == null ? void 0 : history.bitableRecordId) || (state == null ? void 0 : state.bitableRecordId) || "").trim();
+    entry.updatedAt = (history == null ? void 0 : history.updatedAt) || (state == null ? void 0 : state.lastSyncedAt);
+    entry.localDeletedAt = history == null ? void 0 : history.localDeletedAt;
+  }
+  getHistoryEntryLookupKeys(history, state) {
+    const keys = [];
+    const filePath = String((history == null ? void 0 : history.filePath) || (state == null ? void 0 : state.filePath) || "").trim();
+    const docToken = String((history == null ? void 0 : history.docToken) || (state == null ? void 0 : state.docToken) || "").trim();
+    const bitableRecordId = String((history == null ? void 0 : history.bitableRecordId) || (state == null ? void 0 : state.bitableRecordId) || "").trim();
+    if (filePath) {
+      keys.push(`file:${filePath}`);
+    }
+    if (docToken) {
+      keys.push(`doc:${docToken}`);
+    }
+    if (bitableRecordId) {
+      keys.push(`bitable:${bitableRecordId}`);
+    }
+    return keys;
+  }
+  getHistoryEntrySelectionKey(entry) {
+    return String(entry.key || entry.filePath || entry.docToken || entry.bitableRecordId || "").trim();
+  }
+  canSetPermissionsForEntry(entry) {
+    return !!String(entry.docToken || "").trim();
+  }
+  canDeleteHistoryEntry(entry) {
+    return !!String(entry.filePath || "").trim() || !!String(entry.docToken || "").trim() || !!String(entry.bitableRecordId || "").trim();
+  }
+  canClearHistoryRecordOnly(entry) {
+    return !!String(entry.filePath || "").trim() && (this.isLocalDeletedEntry(entry) || isRemoteMissingState(entry.state));
+  }
+  getSelectableHistoryEntries(entries) {
+    return entries.filter((entry) => this.canDeleteHistoryEntry(entry));
+  }
+  getSelectedHistoryEntriesWithin(entries) {
+    return this.getSelectableHistoryEntries(entries).filter((entry) => this.selectedHistoryEntryKeys.has(this.getHistoryEntrySelectionKey(entry)));
+  }
+  clearHistorySelection(entries) {
+    if (!entries) {
+      this.selectedHistoryEntryKeys.clear();
+      return;
+    }
+    entries.forEach((entry) => {
+      const key = typeof entry === "string" ? String(entry || "").trim() : this.getHistoryEntrySelectionKey(entry);
+      if (key) {
+        this.selectedHistoryEntryKeys.delete(key);
+      }
+    });
+  }
+  filterHistoryEntries(entries) {
+    const query = String(this.historySearchQuery || "").trim().toLowerCase();
+    return entries.filter((entry) => this.matchesHistoryEntryFilter(entry) && this.matchesHistoryEntrySearch(entry, query));
+  }
+  isLocalDeletedEntry(entry) {
+    var _a;
+    return !!entry.localDeletedAt || !!((_a = entry.state) == null ? void 0 : _a.localMissing);
+  }
+  matchesHistoryEntryFilter(entry) {
+    if (this.syncStatusFilter === "all") {
+      return true;
+    }
+    if (this.syncStatusFilter === "localDeleted") {
+      return this.isLocalDeletedEntry(entry);
+    }
+    if (!entry.state) {
+      return false;
+    }
+    if (this.syncStatusFilter === "remoteDeleted") {
+      return isRemoteMissingState(entry.state);
+    }
+    const view = buildSyncStatusView(entry.state);
+    if (this.syncStatusFilter === "problem") {
+      return view.shouldAutoSync;
+    }
+    return view.status === this.syncStatusFilter;
+  }
+  matchesHistoryEntrySearch(entry, query) {
+    var _a;
+    if (!query) {
+      return true;
+    }
+    const view = entry.state ? buildSyncStatusView(entry.state) : null;
+    return [
+      entry.title,
+      entry.url,
+      entry.docToken,
+      entry.filePath,
+      entry.bitableRecordId,
+      view == null ? void 0 : view.summary,
+      view == null ? void 0 : view.recommendation.label,
+      view == null ? void 0 : view.recommendation.action,
+      view == null ? void 0 : view.detailText,
+      view ? formatSyncStatus(view.status) : "\u672A\u8BCA\u65AD",
+      (_a = entry.state) == null ? void 0 : _a.lastError
+    ].filter((part) => part !== void 0 && part !== null).map((part) => String(part).toLowerCase()).join("\n").includes(query);
   }
   async smartSyncVisibleStates(states) {
     if (states.length === 0) {
@@ -10297,36 +11831,6 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       this.display();
     }
   }
-  renderSyncStatusItem(containerEl, state) {
-    const view = buildSyncStatusView(state);
-    const row = containerEl.createDiv("upload-history-item");
-    const content = row.createDiv("upload-history-content");
-    const header = content.createDiv("upload-history-header");
-    header.createDiv({ text: view.title, cls: "upload-history-title" });
-    const meta = header.createDiv("upload-history-meta");
-    const badge = meta.createDiv({ text: formatSyncStatus(view.status), cls: `sync-status-badge ${view.status}` });
-    badge.setAttribute("title", view.status);
-    if (view.lastSyncedAt) {
-      meta.createDiv({ text: new Date(view.lastSyncedAt).toLocaleString(), cls: "upload-history-time" });
-    }
-    const actions = meta.createDiv("upload-history-actions");
-    this.renderSyncStatusActions(actions, state);
-    content.createDiv({ text: view.summary, cls: "sync-status-summary-line" });
-    const recommendation = content.createDiv({ cls: `sync-status-recommendation ${view.recommendation.level}` });
-    recommendation.createEl("span", { text: view.recommendation.label, cls: "sync-status-recommendation-label" });
-    recommendation.createEl("span", { text: view.recommendation.action });
-    const detailRow = content.createDiv({ cls: "sync-status-detail" });
-    view.detailParts.forEach((part) => {
-      const chip = detailRow.createDiv({ cls: `sync-status-detail-chip ${part.group}` });
-      chip.createEl("span", { text: part.label, cls: "sync-status-detail-label" });
-      chip.createEl("span", { text: part.value });
-    });
-    if (view.url) {
-      const linkRow = content.createDiv("upload-history-link-row");
-      const linkEl = linkRow.createEl("a", { text: view.url, href: view.url, cls: "upload-history-link" });
-      linkEl.setAttribute("target", "_blank");
-    }
-  }
   renderSyncStatusActions(containerEl, state) {
     const filePath = state && state.filePath ? String(state.filePath) : "";
     const view = buildSyncStatusView(state);
@@ -10359,17 +11863,6 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
     makeAction("\u{1F4CA}", "\u4ECE\u591A\u7EF4\u8868\u683C\u66F4\u65B0\u672C\u5730", async () => {
       await this.plugin.pullFromBitableByPath(filePath);
     }, !view.canSync);
-    if (state.localMissing) {
-      makeAction("\u2715", "\u6E05\u7406\u672C\u5730\u6620\u5C04\uFF08\u4E0D\u5220\u9664\u98DE\u4E66\u5185\u5BB9\uFF09", async () => {
-        if (!confirm(`\u786E\u5B9A\u6E05\u7406\u300C${state.title || state.filePath}\u300D\u7684\u672C\u5730\u540C\u6B65\u6620\u5C04\u5417\uFF1F
-
-\u8FD9\u4E0D\u4F1A\u5220\u9664\u98DE\u4E66\u6587\u6863\u6216\u591A\u7EF4\u8868\u683C\u8BB0\u5F55\u3002`)) {
-          return;
-        }
-        await this.plugin.removeMappingByFilePath(filePath);
-        new import_obsidian6.Notice("\u2705 \u5DF2\u6E05\u7406\u672C\u5730\u540C\u6B65\u6620\u5C04");
-      });
-    }
   }
   renderHistoryBatchToolbar(containerEl, items) {
     const toolbar = containerEl.createDiv({ cls: "share-batch-toolbar" });
@@ -10378,41 +11871,69 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       type: "checkbox",
       cls: "share-select-all"
     });
-    const allDocTokens = items.map((it) => it && it.docToken).filter((t) => !!t);
-    checkbox.checked = allDocTokens.length > 0 && allDocTokens.every((t) => this.selectedHistoryDocTokens.has(String(t)));
+    const visibleSelectableEntries = this.getSelectableHistoryEntries(items);
+    const visibleSelectedEntries = this.getSelectedHistoryEntriesWithin(items);
+    checkbox.checked = visibleSelectableEntries.length > 0 && visibleSelectedEntries.length === visibleSelectableEntries.length;
+    checkbox.indeterminate = visibleSelectedEntries.length > 0 && visibleSelectedEntries.length < visibleSelectableEntries.length;
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) {
-        allDocTokens.forEach((t) => this.selectedHistoryDocTokens.add(String(t)));
+        visibleSelectableEntries.forEach((entry) => this.selectedHistoryEntryKeys.add(this.getHistoryEntrySelectionKey(entry)));
       } else {
-        allDocTokens.forEach((t) => this.selectedHistoryDocTokens.delete(String(t)));
+        visibleSelectableEntries.forEach((entry) => this.selectedHistoryEntryKeys.delete(this.getHistoryEntrySelectionKey(entry)));
       }
       this.display();
     });
-    leftActions.createEl("span", { text: `\u5168\u9009\uFF08\u5DF2\u9009 ${this.selectedHistoryDocTokens.size} \u4E2A\uFF09`, cls: "share-select-label" });
-    if (this.selectedHistoryDocTokens.size > 0) {
+    leftActions.createEl("span", {
+      text: `\u5168\u9009\uFF08\u5F53\u524D\u5206\u7EC4\u5DF2\u9009 ${visibleSelectedEntries.length}/${visibleSelectableEntries.length} \u4E2A\uFF09`,
+      cls: "share-select-label"
+    });
+    if (visibleSelectedEntries.length > 0) {
       const rightActions = toolbar.createDiv({ cls: "share-batch-right" });
+      const permissionEntries = visibleSelectedEntries.filter((entry) => this.canSetPermissionsForEntry(entry));
+      const clearableEntries = visibleSelectedEntries.filter((entry) => this.canClearHistoryRecordOnly(entry));
       const batchPermButton = rightActions.createEl("button", { text: "\u6279\u91CF\u8BBE\u7F6E\u6743\u9650", cls: "mod-cta" });
+      if (permissionEntries.length === 0) {
+        batchPermButton.disabled = true;
+        batchPermButton.title = "\u5F53\u524D\u6240\u9009\u8BB0\u5F55\u6CA1\u6709\u53EF\u8BBE\u7F6E\u6743\u9650\u7684\u98DE\u4E66\u6587\u6863";
+      }
       batchPermButton.addEventListener("click", async () => {
-        await this.batchSetPermissions();
+        await this.batchSetPermissions(permissionEntries);
+      });
+      const batchClearButton = rightActions.createEl("button", { text: "\u6279\u91CF\u6E05\u9664\u8BB0\u5F55" });
+      if (clearableEntries.length === 0) {
+        batchClearButton.disabled = true;
+        batchClearButton.title = "\u5F53\u524D\u6240\u9009\u8BB0\u5F55\u6CA1\u6709\u53EF\u53EA\u6E05\u9664\u7684\u672C\u5730\u8BB0\u5F55";
+      }
+      batchClearButton.addEventListener("click", async () => {
+        await this.batchClearHistoryRecords(clearableEntries);
       });
       const batchDeleteButton = rightActions.createEl("button", { text: "\u6279\u91CF\u5220\u9664", cls: "mod-warning" });
       batchDeleteButton.addEventListener("click", async () => {
-        await this.batchDeleteItems();
+        await this.batchDeleteItems(visibleSelectedEntries);
       });
     }
   }
   renderHistoryItem(containerEl, item) {
     const row = containerEl.createDiv("upload-history-item");
     const checkbox = row.createEl("input", { type: "checkbox", cls: "share-item-checkbox" });
-    const token = item && item.docToken ? String(item.docToken) : "";
-    checkbox.checked = !!token && this.selectedHistoryDocTokens.has(token);
+    const token = item.docToken ? String(item.docToken) : "";
+    const selectionKey = this.getHistoryEntrySelectionKey(item);
+    const canSelect = this.canDeleteHistoryEntry(item);
+    const view = item.state ? buildSyncStatusView(item.state) : null;
+    const expanded = this.expandedHistoryEntries.has(item.key);
+    const url = item.url || (item.docToken ? `https://feishu.cn/docx/${item.docToken}` : "");
+    checkbox.checked = canSelect && this.selectedHistoryEntryKeys.has(selectionKey);
+    checkbox.disabled = !canSelect;
+    if (!canSelect) {
+      checkbox.setAttribute("title", "\u8BE5\u6761\u8BB0\u5F55\u7F3A\u5C11\u53EF\u6E05\u7406\u7684\u6620\u5C04\u4FE1\u606F\uFF0C\u4E0D\u80FD\u53C2\u4E0E\u6279\u91CF\u64CD\u4F5C");
+    }
     checkbox.addEventListener("change", () => {
-      if (!token)
+      if (!canSelect)
         return;
       if (checkbox.checked) {
-        this.selectedHistoryDocTokens.add(token);
+        this.selectedHistoryEntryKeys.add(selectionKey);
       } else {
-        this.selectedHistoryDocTokens.delete(token);
+        this.selectedHistoryEntryKeys.delete(selectionKey);
       }
       this.display();
     });
@@ -10420,31 +11941,63 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
     const header = content.createDiv("upload-history-header");
     header.createDiv({ text: item.title || item.filePath || item.docToken, cls: "upload-history-title" });
     const meta = header.createDiv("upload-history-meta");
+    const statusBadge = meta.createDiv({
+      text: view ? formatSyncStatus(view.status) : "\u672A\u8BCA\u65AD",
+      cls: view ? `sync-status-badge ${view.status}` : "sync-status-badge pending"
+    });
+    const toggleExpanded = () => {
+      if (expanded) {
+        this.expandedHistoryEntries.delete(item.key);
+      } else {
+        this.expandedHistoryEntries.add(item.key);
+      }
+      this.display();
+    };
+    statusBadge.setAttribute("title", view ? `${view.summary}\uFF08\u70B9\u51FB\u5C55\u5F00\u8BCA\u65AD\uFF09` : "\u5F53\u524D\u8FD8\u6CA1\u6709\u751F\u6210\u540C\u6B65\u8BCA\u65AD\u8BB0\u5F55\uFF08\u70B9\u51FB\u5C55\u5F00\uFF09");
+    statusBadge.style.cursor = "pointer";
+    statusBadge.onclick = () => {
+      toggleExpanded();
+    };
     if (item.localDeletedAt) {
       const deletedBadge = meta.createDiv({ text: "\u672C\u5730\u5DF2\u5220\u9664", cls: "sync-status-badge error" });
       deletedBadge.setAttribute("title", new Date(item.localDeletedAt).toLocaleString());
+    }
+    if (item.state && isRemoteMissingState(item.state)) {
+      const remoteDeletedBadge = meta.createDiv({ text: "\u8FDC\u7AEF\u5DF2\u5220\u9664", cls: "sync-status-badge error" });
+      remoteDeletedBadge.setAttribute("title", item.state.lastError || "\u8FDC\u7AEF\u8BB0\u5F55\u5DF2\u5220\u9664");
     }
     if (item.updatedAt) {
       const t = new Date(item.updatedAt);
       meta.createDiv({ text: `${t.toLocaleString()}`, cls: "upload-history-time" });
     }
     const actions = meta.createDiv("upload-history-actions");
-    const url = item.url || (item.docToken ? `https://feishu.cn/docx/${item.docToken}` : "");
-    const linkRow = content.createDiv("upload-history-link-row");
-    const linkEl = linkRow.createEl("a", { text: url, href: url, cls: "upload-history-link" });
-    linkEl.setAttribute("target", "_blank");
-    const copyBtn = actions.createEl("span", { text: "\u{1F4CB}", cls: "upload-history-action-btn" });
-    copyBtn.setAttribute("title", "\u590D\u5236\u94FE\u63A5");
-    copyBtn.onclick = () => {
+    const makeHistoryAction = (text, title, onClick, disabled = false) => {
+      const btn = actions.createEl("span", { text, cls: "upload-history-action-btn" });
+      btn.setAttribute("title", title);
+      if (disabled) {
+        btn.style.opacity = "0.35";
+        btn.style.cursor = "not-allowed";
+        return;
+      }
+      btn.onclick = async () => {
+        try {
+          await onClick();
+        } catch (e) {
+          new import_obsidian6.Notice(`\u274C \u64CD\u4F5C\u5931\u8D25: ${e.message || String(e)}`);
+        }
+      };
+    };
+    makeHistoryAction("\u{1F4CB}", "\u590D\u5236\u94FE\u63A5", () => {
+      if (!url) {
+        return;
+      }
       try {
         navigator.clipboard.writeText(url);
         new import_obsidian6.Notice("\u94FE\u63A5\u5DF2\u590D\u5236\u5230\u526A\u8D34\u677F");
       } catch (e) {
       }
-    };
-    const permBtn = actions.createEl("span", { text: "\u2699\uFE0F", cls: "upload-history-action-btn" });
-    permBtn.setAttribute("title", "\u8BBE\u7F6E\u6743\u9650");
-    permBtn.onclick = async () => {
+    }, !url);
+    makeHistoryAction("\u2699\uFE0F", "\u8BBE\u7F6E\u6743\u9650", async () => {
       if (!token) {
         new import_obsidian6.Notice("\u274C docToken \u7F3A\u5931\uFF0C\u65E0\u6CD5\u8BBE\u7F6E\u6743\u9650");
         return;
@@ -10474,54 +12027,89 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
           this.display();
         }
       }).open();
-    };
-    const deleteBtn = actions.createEl("span", { text: "\u{1F5D1}\uFE0F", cls: "upload-history-action-btn" });
-    deleteBtn.setAttribute("title", "\u5220\u9664\u4E91\u7AEF\u6587\u6863");
-    deleteBtn.onclick = async () => {
-      if (!token) {
-        new import_obsidian6.Notice("\u274C docToken \u7F3A\u5931\uFF0C\u65E0\u6CD5\u5220\u9664\u6587\u6863");
-        return;
-      }
-      const confirmed = confirm("\u786E\u5B9A\u8981\u5220\u9664\u8BE5\u6761\u8BB0\u5F55\u5BF9\u5E94\u7684\u98DE\u4E66\u4E91\u7AEF\u6587\u6863\u5417\uFF1F\n\n\u6CE8\u610F\uFF1A\u6B64\u64CD\u4F5C\u5C06\u5220\u9664\u98DE\u4E66\u4E91\u7AEF\u6587\u6863\uFF0C\u5E76\u79FB\u9664\u672C\u5730\u6620\u5C04\u3002");
+    }, !this.canSetPermissionsForEntry(item));
+    makeHistoryAction("\u{1F9F9}", "\u53EA\u6E05\u9664\u8BB0\u5F55\uFF08\u4E0D\u5220\u9664\u8FDC\u7AEF\uFF09", async () => {
+      await this.clearHistoryRecordOnly(item);
+    }, !this.canClearHistoryRecordOnly(item));
+    makeHistoryAction("\u{1F5D1}\uFE0F", "\u5220\u9664\u8BB0\u5F55", async () => {
+      const confirmed = confirm("\u786E\u5B9A\u8981\u5220\u9664\u8FD9\u6761\u8BB0\u5F55\u5417\uFF1F\n\n\u6CE8\u610F\uFF1A\u80FD\u5220\u9664\u8FDC\u7AEF\u5185\u5BB9\u65F6\u4F1A\u4E00\u5E76\u5220\u9664\u8FDC\u7AEF\uFF0C\u5E76\u79FB\u9664\u672C\u5730\u6620\u5C04\uFF1B\u5220\u9664\u540E\u4F1A\u4ECE\u5217\u8868\u4E2D\u6D88\u5931\u3002");
       if (!confirmed)
         return;
       try {
-        try {
-          await this.plugin.feishuApi.deleteDocument(token);
-        } catch (e) {
-          if (!this.isNotFoundError(e) && !this.isTokenInvalidDeleteError(e)) {
-            throw e;
-          }
-        }
-        await this.tryDeleteBitableForHistoryToken(token);
-        await this.deleteHistoryItem(token);
-        this.selectedHistoryDocTokens.delete(token);
+        await this.deleteHistoryEntry(item);
+        this.clearHistorySelection([item]);
+        this.expandedHistoryEntries.delete(item.key);
         this.display();
-        new import_obsidian6.Notice("\u2705 \u5DF2\u79FB\u9664\u6620\u5C04");
+        new import_obsidian6.Notice("\u2705 \u8BB0\u5F55\u5DF2\u5220\u9664");
       } catch (e) {
         Promise.resolve().then(() => (init_debug(), debug_exports)).then(({ Debug: Debug2 }) => Debug2.error("Delete document failed:", e));
         new import_obsidian6.Notice(`\u274C \u5220\u9664\u5931\u8D25: ${e.message || String(e)}`);
       }
+    }, !this.canDeleteHistoryEntry(item));
+    makeHistoryAction(expanded ? "\u25B4" : "\u25BE", expanded ? "\u6536\u8D77\u540C\u6B65\u8BCA\u65AD" : "\u5C55\u5F00\u540C\u6B65\u8BCA\u65AD", () => {
+      toggleExpanded();
+    });
+    content.createDiv({
+      text: view ? view.summary : "\u5DF2\u8BB0\u5F55\u4E91\u7AEF\u6620\u5C04\uFF0C\u53EF\u5C55\u5F00\u67E5\u770B\u540C\u6B65\u8BCA\u65AD\u548C\u540C\u6B65\u64CD\u4F5C\u3002",
+      cls: "sync-status-summary-line"
+    });
+    if (url) {
+      const linkRow = content.createDiv("upload-history-link-row");
+      const linkEl = linkRow.createEl("a", { text: url, href: url, cls: "upload-history-link" });
+      linkEl.setAttribute("target", "_blank");
+    }
+    if (!expanded) {
+      return;
+    }
+    const diagnosticPanel = content.createDiv({ cls: "history-diagnostic-panel" });
+    if (view && item.state) {
+      const recommendation = diagnosticPanel.createDiv({ cls: `sync-status-recommendation ${view.recommendation.level}` });
+      recommendation.createEl("span", { text: view.recommendation.label, cls: "sync-status-recommendation-label" });
+      recommendation.createEl("span", { text: view.recommendation.action });
+      const diagnosticActions = diagnosticPanel.createDiv({ cls: "history-diagnostic-actions" });
+      this.renderSyncStatusActions(diagnosticActions, item.state);
+      const detailRow = diagnosticPanel.createDiv({ cls: "sync-status-detail" });
+      view.detailParts.forEach((part) => {
+        const chip = detailRow.createDiv({ cls: `sync-status-detail-chip ${part.group}` });
+        chip.createEl("span", { text: part.label, cls: "sync-status-detail-label" });
+        chip.createEl("span", { text: part.value });
+      });
+    } else {
+      diagnosticPanel.createDiv({
+        text: "\u8FD8\u6CA1\u6709\u540C\u6B65\u8BCA\u65AD\u8BB0\u5F55\u3002\u6267\u884C\u4E00\u6B21\u667A\u80FD\u540C\u6B65\u540E\uFF0C\u8FD9\u91CC\u4F1A\u663E\u793A\u5EFA\u8BAE\u3001\u51B2\u7A81\u548C\u9519\u8BEF\u4FE1\u606F\u3002",
+        cls: "history-diagnostic-muted"
+      });
+    }
+    const mappingRow = diagnosticPanel.createDiv({ cls: "sync-status-detail" });
+    const appendChip = (label, value, group = "mapping") => {
+      if (!value) {
+        return;
+      }
+      const chip = mappingRow.createDiv({ cls: `sync-status-detail-chip ${group}` });
+      chip.createEl("span", { text: label, cls: "sync-status-detail-label" });
+      chip.createEl("span", { text: value });
     };
+    appendChip("\u6587\u4EF6", item.filePath);
+    appendChip("DocToken", item.docToken);
+    if (!(view == null ? void 0 : view.detailParts.some((part) => part.label === "Bitable"))) {
+      appendChip("Bitable", item.bitableRecordId);
+    }
   }
-  async tryDeleteBitableForHistoryToken(docToken) {
+  async tryDeleteBitableForHistoryEntry(entry) {
     try {
-      const appToken = this.plugin.settings.bitableAppToken;
-      const tableId = this.plugin.settings.bitableTableId;
+      const historyItem = entry.history;
+      const stateItem = entry.state;
+      const appToken = String((historyItem == null ? void 0 : historyItem.bitableAppToken) || (stateItem == null ? void 0 : stateItem.bitableAppToken) || this.plugin.settings.bitableAppToken || "").trim();
+      const tableId = String((historyItem == null ? void 0 : historyItem.bitableTableId) || (stateItem == null ? void 0 : stateItem.bitableTableId) || this.plugin.settings.bitableTableId || "").trim();
       if (!appToken || !tableId) {
         return;
       }
-      const history = Array.isArray(this.plugin.settings.uploadHistory) ? this.plugin.settings.uploadHistory : [];
-      const it = history.find((h) => h && String(h.docToken) === String(docToken));
-      if (!it) {
-        return;
-      }
-      const directRecordId = it.bitableRecordId ? String(it.bitableRecordId) : "";
+      const directRecordId = String((historyItem == null ? void 0 : historyItem.bitableRecordId) || (stateItem == null ? void 0 : stateItem.bitableRecordId) || entry.bitableRecordId || "").trim();
       if (directRecordId) {
         await this.plugin.feishuApi.deleteBitableRecord(appToken, tableId, directRecordId);
         return;
       }
-      const url = it.url || (it.docToken ? `https://feishu.cn/docx/${it.docToken}` : "");
+      const url = entry.url || (entry.docToken ? `https://feishu.cn/docx/${entry.docToken}` : "");
       if (!url) {
         return;
       }
@@ -10534,25 +12122,98 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       return;
     }
   }
-  async deleteHistoryItem(docToken) {
-    await this.plugin.removeMappingByDocToken(docToken);
+  async deleteHistoryEntry(entry) {
+    const docToken = String(entry.docToken || "").trim();
+    const filePath = String(entry.filePath || "").trim();
+    if (docToken) {
+      try {
+        await this.plugin.feishuApi.deleteDocument(docToken);
+      } catch (e) {
+        if (!this.isNotFoundError(e) && !this.isTokenInvalidDeleteError(e)) {
+          throw e;
+        }
+      }
+    }
+    await this.tryDeleteBitableForHistoryEntry(entry);
+    if (docToken) {
+      await this.plugin.removeMappingByDocToken(docToken);
+      return;
+    }
+    if (filePath) {
+      await this.plugin.removeMappingByFilePath(filePath);
+    }
   }
-  async batchSetPermissions() {
-    if (this.selectedHistoryDocTokens.size === 0) {
+  async clearHistoryRecordOnlyEntry(entry) {
+    const filePath = String(entry.filePath || "").trim();
+    if (!filePath) {
+      throw new Error("\u8FD9\u6761\u8BB0\u5F55\u7F3A\u5C11\u672C\u5730\u8DEF\u5F84\uFF0C\u65E0\u6CD5\u53EA\u6E05\u9664\u8BB0\u5F55");
+    }
+    await this.plugin.removeMappingByFilePath(filePath);
+    this.clearHistorySelection([entry]);
+    this.expandedHistoryEntries.delete(entry.key);
+  }
+  async clearHistoryRecordOnly(entry) {
+    const filePath = String(entry.filePath || "").trim();
+    if (!filePath) {
+      new import_obsidian6.Notice("\u274C \u8FD9\u6761\u8BB0\u5F55\u7F3A\u5C11\u672C\u5730\u8DEF\u5F84\uFF0C\u65E0\u6CD5\u53EA\u6E05\u9664\u8BB0\u5F55");
+      return;
+    }
+    const confirmed = confirm(`\u786E\u5B9A\u8981\u53EA\u6E05\u9664\u201C${entry.title || filePath}\u201D\u8FD9\u6761\u8BB0\u5F55\u5417\uFF1F
+
+\u8FD9\u53EA\u4F1A\u79FB\u9664\u63D2\u4EF6\u4E2D\u7684\u672C\u5730\u540C\u6B65\u8BB0\u5F55\u548C\u6620\u5C04\u5173\u7CFB\uFF0C\u4E0D\u4F1A\u5220\u9664\u98DE\u4E66\u6587\u6863\u6216\u591A\u7EF4\u8868\u683C\u8BB0\u5F55\u3002`);
+    if (!confirmed) {
+      return;
+    }
+    await this.clearHistoryRecordOnlyEntry(entry);
+    this.display();
+    new import_obsidian6.Notice("\u2705 \u5DF2\u53EA\u6E05\u9664\u8BB0\u5F55");
+  }
+  async batchClearHistoryRecords(entries) {
+    const selectedEntries = entries.filter((entry) => this.canClearHistoryRecordOnly(entry)).filter((entry, index, list) => {
+      const key = this.getHistoryEntrySelectionKey(entry);
+      return !!key && list.findIndex((candidate) => this.getHistoryEntrySelectionKey(candidate) === key) === index;
+    });
+    if (selectedEntries.length === 0) {
+      new import_obsidian6.Notice("\u274C \u8BF7\u5148\u9009\u62E9\u8981\u6E05\u9664\u7684\u8BB0\u5F55");
+      return;
+    }
+    const confirmed = confirm(`\u786E\u5B9A\u8981\u6E05\u9664\u5F53\u524D\u5206\u7EC4\u5DF2\u9009\u7684 ${selectedEntries.length} \u6761\u8BB0\u5F55\u5417\uFF1F
+
+\u8FD9\u53EA\u4F1A\u79FB\u9664\u63D2\u4EF6\u4E2D\u7684\u672C\u5730\u540C\u6B65\u8BB0\u5F55\u548C\u6620\u5C04\u5173\u7CFB\uFF0C\u4E0D\u4F1A\u5220\u9664\u98DE\u4E66\u6587\u6863\u6216\u591A\u7EF4\u8868\u683C\u8BB0\u5F55\u3002`);
+    if (!confirmed)
+      return;
+    const notice = this.plugin.settings.suppressShareNotices ? void 0 : new import_obsidian6.Notice(`\u{1F9F9} \u6B63\u5728\u6E05\u9664\u8BB0\u5F55(0/${selectedEntries.length})...`, 0);
+    try {
+      for (let i = 0; i < selectedEntries.length; i++) {
+        const entry = selectedEntries[i];
+        notice == null ? void 0 : notice.setMessage(`\u{1F9F9} \u6B63\u5728\u6E05\u9664\u8BB0\u5F55(${i + 1}/${selectedEntries.length})...`);
+        await this.clearHistoryRecordOnlyEntry(entry);
+      }
+      new import_obsidian6.Notice("\u2705 \u6279\u91CF\u6E05\u9664\u8BB0\u5F55\u5B8C\u6210");
+    } catch (e) {
+      new import_obsidian6.Notice(`\u274C \u6279\u91CF\u6E05\u9664\u8BB0\u5F55\u5931\u8D25: ${e.message || String(e)}`);
+    } finally {
+      notice == null ? void 0 : notice.hide();
+      this.display();
+    }
+  }
+  async batchSetPermissions(entries) {
+    const selectedEntries = entries.filter((entry) => this.canSetPermissionsForEntry(entry));
+    const selectedTokens = Array.from(new Set(selectedEntries.map((entry) => String(entry.docToken || "").trim()).filter((token) => !!token)));
+    if (selectedEntries.length === 0 || selectedTokens.length === 0) {
       new import_obsidian6.Notice("\u274C \u8BF7\u5148\u9009\u62E9\u8981\u8BBE\u7F6E\u7684\u6587\u6863");
       return;
     }
-    const tokens = Array.from(this.selectedHistoryDocTokens);
     new PermissionModal(this.app, this.plugin, {
       title: "\u6279\u91CF\u8BBE\u7F6E\u6743\u9650",
-      description: `\u5C06\u4EE5\u4E0B\u8BBE\u7F6E\u5E94\u7528\u5230\u6240\u9009 ${tokens.length} \u4E2A\u6587\u6863`,
+      description: `\u5C06\u4EE5\u4E0B\u8BBE\u7F6E\u5E94\u7528\u5230\u5F53\u524D\u5206\u7EC4\u6240\u9009 ${selectedTokens.length} \u4E2A\u6587\u6863`,
       onSubmit: async (enableLinkShare, linkSharePermission) => {
-        const notice = this.plugin.settings.suppressShareNotices ? void 0 : new import_obsidian6.Notice(`\u{1F517} \u6B63\u5728\u8BBE\u7F6E\u6743\u9650(0/${tokens.length})...`, 0);
+        const notice = this.plugin.settings.suppressShareNotices ? void 0 : new import_obsidian6.Notice(`\u{1F517} \u6B63\u5728\u8BBE\u7F6E\u6743\u9650(0/${selectedTokens.length})...`, 0);
         try {
-          for (let i = 0; i < tokens.length; i++) {
-            notice == null ? void 0 : notice.setMessage(`\u{1F517} \u6B63\u5728\u8BBE\u7F6E\u6743\u9650(${i + 1}/${tokens.length})...`);
+          for (let i = 0; i < selectedTokens.length; i++) {
+            notice == null ? void 0 : notice.setMessage(`\u{1F517} \u6B63\u5728\u8BBE\u7F6E\u6743\u9650(${i + 1}/${selectedTokens.length})...`);
             await this.plugin.feishuApi.setDocumentSharePermissionsExplicit({
-              documentToken: tokens[i],
+              documentToken: selectedTokens[i],
               enableLinkShare,
               linkSharePermission,
               skipPermissionCheck: true
@@ -10563,43 +12224,40 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
           new import_obsidian6.Notice(`\u274C \u6279\u91CF\u8BBE\u7F6E\u6743\u9650\u5931\u8D25: ${e.message || String(e)}`);
         } finally {
           notice == null ? void 0 : notice.hide();
-          this.selectedHistoryDocTokens.clear();
+          this.clearHistorySelection(selectedEntries);
           this.display();
         }
       }
     }).open();
   }
-  async batchDeleteItems() {
-    if (this.selectedHistoryDocTokens.size === 0) {
-      new import_obsidian6.Notice("\u274C \u8BF7\u5148\u9009\u62E9\u8981\u5220\u9664\u7684\u6587\u6863");
+  async batchDeleteItems(entries) {
+    const selectedEntries = entries.filter((entry, index, list) => {
+      const key = this.getHistoryEntrySelectionKey(entry);
+      return !!key && list.findIndex((candidate) => this.getHistoryEntrySelectionKey(candidate) === key) === index;
+    });
+    if (selectedEntries.length === 0) {
+      new import_obsidian6.Notice("\u274C \u8BF7\u5148\u9009\u62E9\u8981\u5220\u9664\u7684\u8BB0\u5F55");
       return;
     }
-    const confirmed = confirm(`\u786E\u5B9A\u8981\u6279\u91CF\u5220\u9664 ${this.selectedHistoryDocTokens.size} \u4E2A\u6587\u6863\u5417\uFF1F
+    const confirmed = confirm(`\u786E\u5B9A\u8981\u5220\u9664\u5F53\u524D\u5206\u7EC4\u5DF2\u9009\u7684 ${selectedEntries.length} \u6761\u8BB0\u5F55\u5417\uFF1F
 
-\u6CE8\u610F\uFF1A\u6B64\u64CD\u4F5C\u5C06\u5220\u9664\u98DE\u4E66\u4E91\u7AEF\u6587\u6863\uFF0C\u5E76\u79FB\u9664\u672C\u5730\u6620\u5C04\u3002`);
+\u6CE8\u610F\uFF1A\u80FD\u5220\u9664\u8FDC\u7AEF\u5185\u5BB9\u65F6\u4F1A\u4E00\u5E76\u5220\u9664\u8FDC\u7AEF\uFF0C\u5E76\u79FB\u9664\u8FD9\u4E9B\u8BB0\u5F55\u7684\u672C\u5730\u6620\u5C04\u3002\u672A\u52FE\u9009\u7684\u5206\u7EC4\u8BB0\u5F55\u4E0D\u4F1A\u53D7\u5F71\u54CD\u3002`);
     if (!confirmed)
       return;
-    const tokens = Array.from(this.selectedHistoryDocTokens);
-    const notice = this.plugin.settings.suppressShareNotices ? void 0 : new import_obsidian6.Notice(`\u{1F5D1}\uFE0F \u6B63\u5728\u5220\u9664(0/${tokens.length})...`, 0);
+    const notice = this.plugin.settings.suppressShareNotices ? void 0 : new import_obsidian6.Notice(`\u{1F5D1}\uFE0F \u6B63\u5728\u5220\u9664(0/${selectedEntries.length})...`, 0);
     try {
-      for (let i = 0; i < tokens.length; i++) {
-        notice == null ? void 0 : notice.setMessage(`\u{1F5D1}\uFE0F \u6B63\u5728\u5220\u9664(${i + 1}/${tokens.length})...`);
-        try {
-          await this.plugin.feishuApi.deleteDocument(tokens[i]);
-        } catch (e) {
-          if (!this.isNotFoundError(e) && !this.isTokenInvalidDeleteError(e)) {
-            throw e;
-          }
-        }
-        await this.tryDeleteBitableForHistoryToken(tokens[i]);
-        await this.deleteHistoryItem(tokens[i]);
+      for (let i = 0; i < selectedEntries.length; i++) {
+        const entry = selectedEntries[i];
+        notice == null ? void 0 : notice.setMessage(`\u{1F5D1}\uFE0F \u6B63\u5728\u5220\u9664(${i + 1}/${selectedEntries.length})...`);
+        await this.deleteHistoryEntry(entry);
+        this.clearHistorySelection([entry]);
+        this.expandedHistoryEntries.delete(entry.key);
       }
       new import_obsidian6.Notice("\u2705 \u6279\u91CF\u5220\u9664\u5B8C\u6210");
     } catch (e) {
       new import_obsidian6.Notice(`\u274C \u6279\u91CF\u5220\u9664\u5931\u8D25: ${e.message || String(e)}`);
     } finally {
       notice == null ? void 0 : notice.hide();
-      this.selectedHistoryDocTokens.clear();
       this.display();
     }
   }
@@ -11610,9 +13268,12 @@ var SyncStateService = class {
     return true;
   }
   getLocalChange(filePath, content) {
+    return this.getLocalChangeForKind(filePath, content);
+  }
+  getLocalChangeForKind(filePath, content, kind) {
     const state = this.getState(filePath);
     const currentHash = this.hashContent(content);
-    const lastHash = state == null ? void 0 : state.localHash;
+    const lastHash = this.getLastLocalHash(state, kind);
     return {
       hasBaseline: !!lastHash,
       hasLocalChanges: !!lastHash && lastHash !== currentHash,
@@ -11622,12 +13283,12 @@ var SyncStateService = class {
     };
   }
   evaluateSync(filePath, content, remote) {
-    const local = this.getLocalChange(filePath, content);
+    const remoteKind = this.inferRemoteKind(remote);
+    const local = this.getLocalChangeForKind(filePath, content, remoteKind);
     const state = local.state;
     const remoteHash = remote == null ? void 0 : remote.hash;
     const remoteRevision = remote == null ? void 0 : remote.revision;
     const remoteUpdatedAt = remote == null ? void 0 : remote.updatedAt;
-    const remoteKind = this.inferRemoteKind(remote);
     const lastRemoteHash = remoteHash ? (state == null ? void 0 : state.bitableRemoteHash) || (state == null ? void 0 : state.remoteHash) : void 0;
     const lastRemoteRevision = remoteRevision ? (state == null ? void 0 : state.docRemoteRevision) || (state == null ? void 0 : state.remoteRevision) : void 0;
     const lastRemoteUpdatedAt = this.getLastRemoteUpdatedAt(state, remoteKind);
@@ -11667,6 +13328,7 @@ var SyncStateService = class {
     const hasRemoteSnapshot = this.hasRemoteSnapshot(update);
     const isDocDirection = update.direction === "obsidian-to-feishu" || update.direction === "feishu-to-obsidian";
     const isBitableDirection = update.direction === "bitable";
+    const contentHash = shouldAdvanceBaseline && update.content !== void 0 ? this.hashContent(update.content) : void 0;
     const docRemoteRevision = update.docRemoteRevision || update.remoteRevision;
     const docRemoteUpdatedAt = typeof update.docRemoteUpdatedAt === "number" ? update.docRemoteUpdatedAt : isDocDirection ? update.remoteUpdatedAt : void 0;
     const bitableRemoteHash = update.bitableRemoteHash || update.remoteHash;
@@ -11681,7 +13343,13 @@ var SyncStateService = class {
       docToken: update.docToken || (existing == null ? void 0 : existing.docToken),
       url: update.url || (existing == null ? void 0 : existing.url),
       bitableRecordId: update.bitableRecordId || (existing == null ? void 0 : existing.bitableRecordId),
-      localHash: shouldAdvanceBaseline && update.content !== void 0 ? this.hashContent(update.content) : existing == null ? void 0 : existing.localHash,
+      bitableProfileId: update.bitableProfileId || (existing == null ? void 0 : existing.bitableProfileId),
+      bitableAppToken: update.bitableAppToken || (existing == null ? void 0 : existing.bitableAppToken),
+      bitableTableId: update.bitableTableId || (existing == null ? void 0 : existing.bitableTableId),
+      bitableViewId: update.bitableViewId || (existing == null ? void 0 : existing.bitableViewId),
+      localHash: contentHash || (existing == null ? void 0 : existing.localHash),
+      docLocalHash: isDocDirection && contentHash ? contentHash : existing == null ? void 0 : existing.docLocalHash,
+      bitableLocalHash: isBitableDirection && contentHash ? contentHash : existing == null ? void 0 : existing.bitableLocalHash,
       lastDirection: update.direction,
       status,
       lastSyncedAt: now,
@@ -11730,6 +13398,18 @@ var SyncStateService = class {
     }
     return null;
   }
+  getLastLocalHash(state, kind) {
+    if (!state) {
+      return void 0;
+    }
+    if (kind === "doc") {
+      return state.docLocalHash || state.localHash;
+    }
+    if (kind === "bitable") {
+      return state.bitableLocalHash || state.localHash;
+    }
+    return state.localHash;
+  }
   getLastRemoteUpdatedAt(state, remoteKind) {
     var _a, _b;
     if (remoteKind === "bitable") {
@@ -11765,6 +13445,10 @@ var SyncStateService = class {
       docToken: hit.docToken,
       url: hit.url,
       bitableRecordId: hit.bitableRecordId,
+      bitableProfileId: hit.bitableProfileId,
+      bitableAppToken: hit.bitableAppToken,
+      bitableTableId: hit.bitableTableId,
+      bitableViewId: hit.bitableViewId,
       lastSyncedAt: hit.updatedAt
     };
   }
@@ -11804,159 +13488,6 @@ function buildPlan(action, reason, convergeAfterPull = false) {
   return { action, reason, convergeAfterPull };
 }
 
-// src/bitable-fields.ts
-var STRUCTURED_BTABLE_FIELD_TYPES = /* @__PURE__ */ new Set([11, 15, 17, 18, 19, 21, 22, 23]);
-function tryParseJsonString(value) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (!(trimmed.startsWith("{") && trimmed.endsWith("}") || trimmed.startsWith("[") && trimmed.endsWith("]"))) {
-    return null;
-  }
-  try {
-    return JSON.parse(trimmed);
-  } catch (e) {
-    return null;
-  }
-}
-function normalizeStringList(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => bitableFieldToPlainText(item).trim()).filter((item) => item.length > 0);
-  }
-  if (typeof value === "string") {
-    return value.split(/[\n,;]+/).map((item) => item.trim()).filter((item) => item.length > 0);
-  }
-  const text = bitableFieldToPlainText(value).trim();
-  return text ? [text] : [];
-}
-function bitableFieldToPlainText(value) {
-  if (value === void 0 || value === null)
-    return "";
-  if (typeof value === "string")
-    return value;
-  if (typeof value === "number" || typeof value === "boolean")
-    return String(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => bitableFieldToPlainText(item)).filter((item) => item.length > 0).join(", ");
-  }
-  if (typeof value === "object") {
-    if (typeof value.text === "string" && value.text.trim())
-      return value.text;
-    if (typeof value.name === "string" && value.name.trim())
-      return value.name;
-    if (typeof value.link === "string" && value.link.trim())
-      return value.link;
-    if (typeof value.url === "string" && value.url.trim())
-      return value.url;
-    if (typeof value.href === "string" && value.href.trim())
-      return value.href;
-    if (typeof value.email === "string" && value.email.trim())
-      return value.email;
-    if (typeof value.en_name === "string" && value.en_name.trim())
-      return value.en_name;
-    if (typeof value.value === "string" && value.value.trim())
-      return value.value;
-    if (Array.isArray(value.link_record_ids))
-      return value.link_record_ids.join(", ");
-  }
-  return JSON.stringify(value);
-}
-function bitableFieldToFrontMatterValue(value, fieldType) {
-  if (value === void 0 || value === null) {
-    return void 0;
-  }
-  if (fieldType === 4) {
-    const items = normalizeStringList(value);
-    return items.length ? items : void 0;
-  }
-  if (fieldType === 7) {
-    if (typeof value === "boolean")
-      return value;
-    const text2 = bitableFieldToPlainText(value).trim().toLowerCase();
-    if (!text2)
-      return void 0;
-    return text2 === "true" || text2 === "1" || text2 === "yes";
-  }
-  if (fieldType === 2) {
-    const numeric = typeof value === "number" ? value : Number(bitableFieldToPlainText(value).trim());
-    return Number.isFinite(numeric) ? numeric : void 0;
-  }
-  const text = bitableFieldToPlainText(value).trim();
-  return text || void 0;
-}
-function normalizeBitableWriteValue(value, fieldMeta, now = Date.now()) {
-  if (value === void 0 || value === null || !fieldMeta) {
-    return value;
-  }
-  const { type } = fieldMeta;
-  if (STRUCTURED_BTABLE_FIELD_TYPES.has(type) && typeof value === "string") {
-    const parsed = tryParseJsonString(value);
-    if (parsed !== null) {
-      return parsed;
-    }
-  }
-  if (type === 1) {
-    return bitableFieldToPlainText(value);
-  }
-  if (type === 2) {
-    const numeric = typeof value === "number" ? value : Number(bitableFieldToPlainText(value).trim());
-    return Number.isFinite(numeric) ? numeric : 0;
-  }
-  if (type === 3) {
-    return bitableFieldToPlainText(value).trim();
-  }
-  if (type === 4) {
-    return normalizeStringList(value);
-  }
-  if (type === 5) {
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value;
-    }
-    const parsed = Date.parse(bitableFieldToPlainText(value).trim());
-    return Number.isFinite(parsed) ? parsed : now;
-  }
-  if (type === 7) {
-    if (typeof value === "boolean")
-      return value;
-    if (typeof value === "number")
-      return value !== 0;
-    const normalized = bitableFieldToPlainText(value).trim().toLowerCase();
-    return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on";
-  }
-  if (type === 11) {
-    if (Array.isArray(value))
-      return value;
-    const items = normalizeStringList(value);
-    return items.length ? items.map((id) => ({ id })) : value;
-  }
-  if (type === 15) {
-    if (value && typeof value === "object")
-      return value;
-    const text = bitableFieldToPlainText(value).trim();
-    if (!text)
-      return "";
-    const markdownLink = text.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
-    if (markdownLink) {
-      return {
-        text: markdownLink[1].trim(),
-        link: markdownLink[2].trim()
-      };
-    }
-    return {
-      text,
-      link: text
-    };
-  }
-  if (type === 18) {
-    if (value && typeof value === "object")
-      return value;
-    const ids = normalizeStringList(value);
-    return ids.length ? { link_record_ids: ids } : value;
-  }
-  return value;
-}
-
 // main.ts
 var FeishuPlugin = class extends import_obsidian7.Plugin {
   constructor() {
@@ -11964,6 +13495,9 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     this.scheduledSyncIntervalId = null;
     this.scheduledSyncStartupTimeoutId = null;
     this.scheduledSyncInProgress = false;
+    this.scheduledProfileIntervalIds = /* @__PURE__ */ new Map();
+    this.scheduledProfileStartupTimeoutIds = /* @__PURE__ */ new Map();
+    this.scheduledProfileInProgress = /* @__PURE__ */ new Set();
   }
   async onload() {
     await this.loadSettings();
@@ -12326,21 +13860,40 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       window.clearTimeout(this.scheduledSyncStartupTimeoutId);
       this.scheduledSyncStartupTimeoutId = null;
     }
+    for (const intervalId of this.scheduledProfileIntervalIds.values()) {
+      window.clearInterval(intervalId);
+    }
+    this.scheduledProfileIntervalIds.clear();
+    for (const timeoutId of this.scheduledProfileStartupTimeoutIds.values()) {
+      window.clearTimeout(timeoutId);
+    }
+    this.scheduledProfileStartupTimeoutIds.clear();
   }
   configureScheduledSync(skipStartup = false) {
     this.clearScheduledSyncTimers();
-    if (!this.settings.enableScheduledSync) {
-      return;
+    if (this.settings.enableScheduledSync) {
+      const intervalMinutes = this.normalizeScheduledSyncIntervalMinutes(this.settings.scheduledSyncIntervalMinutes);
+      const intervalMs = intervalMinutes * 60 * 1e3;
+      this.scheduledSyncIntervalId = window.setInterval(() => {
+        void this.runScheduledSmartSync("interval");
+      }, intervalMs);
+      if (!skipStartup && this.settings.scheduledSyncRunOnStartup) {
+        this.scheduledSyncStartupTimeoutId = window.setTimeout(() => {
+          void this.runScheduledSmartSync("startup");
+        }, 15e3);
+      }
     }
-    const intervalMinutes = this.normalizeScheduledSyncIntervalMinutes(this.settings.scheduledSyncIntervalMinutes);
-    const intervalMs = intervalMinutes * 60 * 1e3;
-    this.scheduledSyncIntervalId = window.setInterval(() => {
-      void this.runScheduledSmartSync("interval");
-    }, intervalMs);
-    if (!skipStartup && this.settings.scheduledSyncRunOnStartup) {
-      this.scheduledSyncStartupTimeoutId = window.setTimeout(() => {
-        void this.runScheduledSmartSync("startup");
-      }, 15e3);
+    for (const profile of this.getScheduledBitableProfiles()) {
+      const intervalMinutes = this.normalizeScheduledSyncIntervalMinutes(profile.scheduledSyncIntervalMinutes);
+      const intervalMs = intervalMinutes * 60 * 1e3;
+      this.scheduledProfileIntervalIds.set(profile.id, window.setInterval(() => {
+        void this.runScheduledBitableProfileSync(profile.id, "interval");
+      }, intervalMs));
+      if (!skipStartup && profile.scheduledSyncRunOnStartup) {
+        this.scheduledProfileStartupTimeoutIds.set(profile.id, window.setTimeout(() => {
+          void this.runScheduledBitableProfileSync(profile.id, "startup");
+        }, 15e3));
+      }
     }
   }
   async runScheduledSmartSync(trigger = "manual", showSummaryNotice = false) {
@@ -12405,11 +13958,12 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     let successCount = 0;
     let failedCount = 0;
     let lastError = "";
+    const initialTotal = files.length;
     await this.persistScheduledSyncReport({
       lastRunAt: startedAt,
       lastTrigger: trigger,
       status: "running",
-      totalFiles: files.length,
+      totalFiles: initialTotal,
       successCount: 0,
       failedCount: 0,
       skippedCount: 0,
@@ -12441,13 +13995,14 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     const nextFailureStreak = failedCount > 0 && successCount === 0 ? (previousReport.failureStreak || 0) + 1 : 0;
     const pauseUntil = trigger !== "manual" && nextFailureStreak >= 3 ? Date.now() + 60 * 60 * 1e3 : void 0;
     const status = failedCount === 0 ? "success" : successCount > 0 ? "partial" : "failed";
-    const message = status === "success" ? `\u5B9A\u65F6\u540C\u6B65\u5B8C\u6210\uFF1A\u6210\u529F ${successCount}/${files.length}` : status === "partial" ? `\u5B9A\u65F6\u540C\u6B65\u90E8\u5206\u5B8C\u6210\uFF1A\u6210\u529F ${successCount}\uFF0C\u5931\u8D25 ${failedCount}` : pauseUntil ? `\u5B9A\u65F6\u540C\u6B65\u8FDE\u7EED\u5931\u8D25 ${nextFailureStreak} \u6B21\uFF0C\u5DF2\u6682\u505C 60 \u5206\u949F` : `\u5B9A\u65F6\u540C\u6B65\u5931\u8D25\uFF1A${failedCount}/${files.length}`;
+    const finalTotal = files.length;
+    const message = status === "success" ? `\u5B9A\u65F6\u540C\u6B65\u5B8C\u6210\uFF1A\u6210\u529F ${successCount}/${finalTotal}` : status === "partial" ? `\u5B9A\u65F6\u540C\u6B65\u90E8\u5206\u5B8C\u6210\uFF1A\u6210\u529F ${successCount}\uFF0C\u5931\u8D25 ${failedCount}` : pauseUntil ? `\u5B9A\u65F6\u540C\u6B65\u8FDE\u7EED\u5931\u8D25 ${nextFailureStreak} \u6B21\uFF0C\u5DF2\u6682\u505C 60 \u5206\u949F` : `\u5B9A\u65F6\u540C\u6B65\u5931\u8D25\uFF1A${failedCount}/${finalTotal}`;
     await this.persistScheduledSyncReport({
       lastRunAt: startedAt,
       lastDurationMs: durationMs,
       lastTrigger: trigger,
       status: pauseUntil ? "paused" : status,
-      totalFiles: files.length,
+      totalFiles: finalTotal,
       successCount,
       failedCount,
       skippedCount: 0,
@@ -12456,9 +14011,52 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       failureStreak: nextFailureStreak,
       pauseUntil
     });
-    this.log(`Scheduled sync (${trigger}) finished: success ${successCount}/${files.length}, failed ${failedCount}`);
+    this.log(`Scheduled sync (${trigger}) finished: success ${successCount}/${finalTotal}, failed ${failedCount}`);
     if (showSummaryNotice) {
       new import_obsidian7.Notice(message);
+    }
+  }
+  async runScheduledBitableProfileSync(profileId, trigger = "manual", showSummaryNotice = false) {
+    const profile = this.getBitableProfileById(profileId);
+    if (!profile || profile.enabled === false) {
+      if (showSummaryNotice) {
+        new import_obsidian7.Notice("\u672A\u627E\u5230\u53EF\u540C\u6B65\u7684\u4EFB\u52A1 Profile");
+      }
+      return false;
+    }
+    if (this.scheduledProfileInProgress.has(profile.id)) {
+      if (showSummaryNotice) {
+        new import_obsidian7.Notice(`${profile.name} \u6B63\u5728\u540C\u6B65\u4E2D\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5`);
+      }
+      return false;
+    }
+    if (!this.settings.accessToken || !this.settings.userInfo) {
+      if (showSummaryNotice) {
+        new import_obsidian7.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u5B8C\u6210\u98DE\u4E66\u6388\u6743");
+      }
+      return false;
+    }
+    this.scheduledProfileInProgress.add(profile.id);
+    try {
+      const result = await this.syncBitableProfileFromRemote(profile, {
+        interactive: false,
+        silent: true,
+        source: "scheduled"
+      });
+      const message = result.failedCount === 0 ? `${profile.name} \u540C\u6B65\u5B8C\u6210\uFF1A\u6210\u529F ${result.successCount}/${result.total}` : result.successCount > 0 ? `${profile.name} \u90E8\u5206\u5B8C\u6210\uFF1A\u6210\u529F ${result.successCount}\uFF0C\u5931\u8D25 ${result.failedCount}` : `${profile.name} \u540C\u6B65\u5931\u8D25\uFF1A${result.failedCount}/${result.total}`;
+      this.log(`Scheduled profile sync (${trigger}) finished for ${profile.id}: success ${result.successCount}/${result.total}, failed ${result.failedCount}`);
+      if (showSummaryNotice) {
+        new import_obsidian7.Notice(message);
+      }
+      return result.failedCount === 0;
+    } catch (error) {
+      this.log(`Scheduled profile sync (${trigger}) failed for ${profile.id}: ${this.getErrorMessage(error)}`, "warn");
+      if (showSummaryNotice) {
+        new import_obsidian7.Notice(`${profile.name} \u540C\u6B65\u5931\u8D25\uFF1A${this.getErrorMessage(error)}`);
+      }
+      return false;
+    } finally {
+      this.scheduledProfileInProgress.delete(profile.id);
     }
   }
   async smartSyncCurrentNote() {
@@ -12518,12 +14116,270 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     }
     return this.app.vault.getMarkdownFiles().find((file) => file.path === path) || null;
   }
+  getBitableProfiles() {
+    this.settings.bitableProfiles = mergeDefaultBitableProfiles(this.settings.bitableProfiles);
+    return this.settings.bitableProfiles;
+  }
+  getBitableProfileById(profileId) {
+    const id = String(profileId || "").trim();
+    if (!id) {
+      return null;
+    }
+    return this.getBitableProfiles().find((profile) => profile.id === id) || null;
+  }
+  getBitableProfileForFile(file, content) {
+    return selectBitableProfileForFile(this.getBitableProfiles(), file.path, content);
+  }
+  getScheduledBitableProfiles() {
+    return selectScheduledBitableProfiles(this.getBitableProfiles(), this.settings.scheduledBitableProfileIds || []);
+  }
+  getProfileRecordIdForFile(file, content, profile) {
+    const direct = getProfileRecordIdFromMarkdown(content);
+    if (direct) {
+      return direct;
+    }
+    const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
+    const existing = history.find((item) => item && item.filePath === file.path && this.historyItemMatchesProfile(item, profile));
+    const state = this.syncState.getState(file.path);
+    if (existing == null ? void 0 : existing.bitableRecordId) {
+      return String(existing.bitableRecordId);
+    }
+    if ((state == null ? void 0 : state.bitableRecordId) && this.syncStateItemMatchesProfile(state, profile)) {
+      return String(state.bitableRecordId);
+    }
+    return "";
+  }
+  historyItemMatchesProfile(item, profile) {
+    if (!item) {
+      return false;
+    }
+    if (item.bitableProfileId) {
+      return String(item.bitableProfileId) === profile.id;
+    }
+    if (item.bitableTableId) {
+      return String(item.bitableTableId) === profile.tableId;
+    }
+    return true;
+  }
+  syncStateItemMatchesProfile(item, profile) {
+    if (!item) {
+      return false;
+    }
+    if (item.bitableProfileId) {
+      return String(item.bitableProfileId) === profile.id;
+    }
+    if (item.bitableTableId) {
+      return String(item.bitableTableId) === profile.tableId;
+    }
+    return true;
+  }
+  isBitableRecordMissingError(error) {
+    const message = this.getErrorMessage(error);
+    return /404/.test(message) || /not\s*found/i.test(message) || /record.*(deleted|not\s*found|not\s*exist)/i.test(message) || /记录.*(不存在|已删除)/.test(message) || /已删除.*记录/.test(message);
+  }
+  buildProfileRemoteDeletedMessage(profile, recordId) {
+    const suffix = recordId ? `\uFF08recordId: ${recordId}\uFF09` : "";
+    return `${profile.name} \u8FDC\u7AEF\u8BB0\u5F55\u5DF2\u5220\u9664${suffix}\uFF0C\u672C\u5730\u6587\u4EF6\u6682\u65F6\u4FDD\u7559`;
+  }
+  async markProfileRemoteMissing(file, profile, recordId, title) {
+    this.syncState.upsert({
+      filePath: file.path,
+      title: title || file.basename,
+      bitableRecordId: recordId,
+      bitableProfileId: profile.id,
+      bitableAppToken: profile.appToken,
+      bitableTableId: profile.tableId,
+      bitableViewId: profile.viewId,
+      direction: "bitable",
+      status: "error",
+      error: this.buildProfileRemoteDeletedMessage(profile, recordId)
+    });
+    await this.saveSettings();
+  }
+  async markProfileRemoteMissingFromListing(profile, remoteRecordIds) {
+    const candidates = /* @__PURE__ */ new Map();
+    const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
+    const states = Array.isArray(this.settings.syncStates) ? this.settings.syncStates : [];
+    const collect = (item, title) => {
+      if (!item || !this.historyItemMatchesProfile(item, profile) && !this.syncStateItemMatchesProfile(item, profile)) {
+        return;
+      }
+      const filePath = String(item.filePath || "").trim();
+      const recordId = String(item.bitableRecordId || "").trim();
+      if (!filePath || !recordId || remoteRecordIds.has(recordId)) {
+        return;
+      }
+      const file = this.app.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof import_obsidian7.TFile) || file.extension !== "md") {
+        return;
+      }
+      if (!candidates.has(filePath)) {
+        candidates.set(filePath, { filePath, title, recordId });
+      }
+    };
+    history.forEach((item) => collect(item, item == null ? void 0 : item.title));
+    states.forEach((item) => collect(item, item == null ? void 0 : item.title));
+    let changed = false;
+    for (const candidate of candidates.values()) {
+      const existing = this.syncState.getState(candidate.filePath);
+      const nextError = this.buildProfileRemoteDeletedMessage(profile, candidate.recordId);
+      if ((existing == null ? void 0 : existing.status) === "error" && existing.lastError === nextError) {
+        continue;
+      }
+      this.syncState.upsert({
+        filePath: candidate.filePath,
+        title: candidate.title,
+        bitableRecordId: candidate.recordId,
+        bitableProfileId: profile.id,
+        bitableAppToken: profile.appToken,
+        bitableTableId: profile.tableId,
+        bitableViewId: profile.viewId,
+        direction: "bitable",
+        status: "error",
+        error: nextError
+      });
+      changed = true;
+    }
+    if (changed) {
+      await this.saveSettings();
+    }
+  }
+  hashBitableProfileRemote(profile, recordId, fields) {
+    return this.syncState.hashContent(buildProfileRemoteManagedContent(profile, recordId, fields));
+  }
+  async getBitableProfileFieldMeta(profile) {
+    const fieldsMeta = await this.feishuApi.getBitableTableFields(profile.appToken, profile.tableId);
+    if (!fieldsMeta.success || !fieldsMeta.fields) {
+      throw new Error(fieldsMeta.error || `\u8BFB\u53D6 Profile ${profile.name} \u5B57\u6BB5\u5931\u8D25`);
+    }
+    return new Map(fieldsMeta.fields.map((field) => [field.name, field]));
+  }
+  setProfileLogicalField(fields, profile, fieldMetaByName, logicalKey, value, now) {
+    if (value === void 0 || value === null || value === "") {
+      return;
+    }
+    const fieldName = resolveProfileFieldName(profile, logicalKey, new Set(fieldMetaByName.keys()));
+    if (!fieldName) {
+      return;
+    }
+    fields[fieldName] = normalizeBitableWriteValue(value, fieldMetaByName.get(fieldName), now);
+  }
+  async ensureProfileTargetFolder(folderPath) {
+    const normalized = (0, import_obsidian7.normalizePath)(String(folderPath || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""));
+    if (!normalized) {
+      return;
+    }
+    const parts = normalized.split("/").filter((part) => !!part);
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      const exists = await this.app.vault.adapter.exists(current);
+      if (!exists) {
+        await this.app.vault.createFolder(current);
+      }
+    }
+  }
+  async buildProfileFilePath(profile, recordId, fields) {
+    const targetDir = (0, import_obsidian7.normalizePath)(String(profile.targetDir || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""));
+    const baseName = renderProfileFileName(profile, recordId, fields);
+    const first = (0, import_obsidian7.normalizePath)(`${targetDir}/${baseName}.md`);
+    const existing = this.getMarkdownFileByPath(first);
+    if (!existing) {
+      return first;
+    }
+    const current = await this.app.vault.read(existing);
+    if (getProfileRecordIdFromMarkdown(current) === recordId) {
+      return first;
+    }
+    return (0, import_obsidian7.normalizePath)(`${targetDir}/${baseName}-${recordId}.md`);
+  }
+  async ensureProfileFilePath(file, profile, recordId, fields) {
+    await this.ensureProfileTargetFolder(profile.targetDir);
+    const targetPath = await this.buildProfileFilePath(profile, recordId, fields);
+    if (!targetPath || targetPath === file.path) {
+      return file;
+    }
+    if (this.app.fileManager && typeof this.app.fileManager.renameFile === "function") {
+      await this.app.fileManager.renameFile(file, targetPath);
+    } else {
+      await this.app.vault.rename(file, targetPath);
+    }
+    return this.getMarkdownFileByPath(targetPath) || file;
+  }
+  async findProfileFileByRecordId(profile, recordId) {
+    const rid = String(recordId || "").trim();
+    if (!rid) {
+      return null;
+    }
+    const states = Array.isArray(this.settings.syncStates) ? this.settings.syncStates : [];
+    const state = states.find((item) => item && item.bitableRecordId === rid && this.syncStateItemMatchesProfile(item, profile) && item.filePath);
+    if (state == null ? void 0 : state.filePath) {
+      const file = this.getMarkdownFileByPath(state.filePath);
+      if (file) {
+        return file;
+      }
+    }
+    const files = this.app.vault.getMarkdownFiles().filter((file) => {
+      const targetDir = (0, import_obsidian7.normalizePath)(String(profile.targetDir || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""));
+      return targetDir ? file.path === targetDir || file.path.startsWith(`${targetDir}/`) : true;
+    });
+    for (const file of files) {
+      try {
+        const content = await this.app.vault.read(file);
+        if (getProfileRecordIdFromMarkdown(content) === rid) {
+          return file;
+        }
+      } catch (e) {
+      }
+    }
+    return null;
+  }
+  async upsertProfileHistoryAndState(params) {
+    const now = Date.now();
+    const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
+    const idx = history.findIndex((item2) => item2 && item2.filePath === params.file.path);
+    const item = {
+      filePath: params.file.path,
+      title: params.title,
+      bitableRecordId: params.recordId,
+      bitableProfileId: params.profile.id,
+      bitableAppToken: params.profile.appToken,
+      bitableTableId: params.profile.tableId,
+      bitableViewId: params.profile.viewId,
+      updatedAt: now
+    };
+    if (idx >= 0) {
+      history[idx] = { ...history[idx], ...item };
+    } else {
+      history.unshift(item);
+    }
+    this.settings.uploadHistory = history;
+    this.syncState.upsert({
+      filePath: params.file.path,
+      title: params.title,
+      content: params.content,
+      bitableRecordId: params.recordId,
+      bitableProfileId: params.profile.id,
+      bitableAppToken: params.profile.appToken,
+      bitableTableId: params.profile.tableId,
+      bitableViewId: params.profile.viewId,
+      direction: "bitable",
+      status: params.status,
+      error: params.error,
+      remoteHash: params.remoteHash,
+      remoteUpdatedAt: params.remoteUpdatedAt,
+      bitableRemoteHash: params.remoteHash,
+      bitableRemoteUpdatedAt: params.remoteUpdatedAt
+    });
+    await this.saveSettings();
+  }
   getBitableRecordIdForFile(file, content) {
     const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
     const existing = history.find((item) => item && item.filePath === file.path);
     const state = this.syncState.getState(file.path);
+    const profileRecordId = getProfileRecordIdFromMarkdown(content);
     const frontMatterRecordId = this.extractFrontMatterValue(content, "recordId");
-    return existing && existing.bitableRecordId ? String(existing.bitableRecordId) : state && state.bitableRecordId ? String(state.bitableRecordId) : frontMatterRecordId;
+    return existing && existing.bitableRecordId ? String(existing.bitableRecordId) : state && state.bitableRecordId ? String(state.bitableRecordId) : profileRecordId || frontMatterRecordId;
   }
   hashBitableFields(fields) {
     return this.syncState.hashContent(this.stableStringify(fields || {}));
@@ -12681,6 +14537,10 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     }
   }
   async smartSyncBitableFile(file, rawContent, options) {
+    const profile = this.getBitableProfileForFile(file, rawContent);
+    if (profile) {
+      return await this.smartSyncBitableProfileFile(file, rawContent, profile, options);
+    }
     const interactive = (options == null ? void 0 : options.interactive) !== false;
     const silent = (options == null ? void 0 : options.silent) === true;
     const syncLabel = (options == null ? void 0 : options.source) === "scheduled" ? "\u5B9A\u65F6\u540C\u6B65" : "\u667A\u80FD\u540C\u6B65";
@@ -12759,6 +14619,228 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     }
     return true;
   }
+  async smartSyncBitableProfileFile(file, rawContent, profile, options) {
+    const interactive = (options == null ? void 0 : options.interactive) !== false;
+    const silent = (options == null ? void 0 : options.silent) === true;
+    const syncLabel = (options == null ? void 0 : options.source) === "scheduled" ? "\u5B9A\u65F6\u540C\u6B65" : "\u667A\u80FD\u540C\u6B65";
+    const recordId = this.getProfileRecordIdForFile(file, rawContent, profile);
+    if (!recordId) {
+      if (!silent) {
+        new import_obsidian7.Notice(`\u672A\u627E\u5230 ${profile.name} \u8BB0\u5F55\u6620\u5C04\uFF0C\u6B63\u5728\u521B\u5EFA\u591A\u7EF4\u8868\u683C\u8BB0\u5F55`);
+      }
+      return !!await this.syncFileToBitableProfile(file, file.basename, rawContent, profile, void 0, silent);
+    }
+    const record = await this.feishuApi.getBitableRecord(profile.appToken, profile.tableId, recordId);
+    if (!record.success || !record.fields) {
+      if (this.isBitableRecordMissingError(record.error)) {
+        await this.markProfileRemoteMissing(file, profile, recordId);
+        if (!silent) {
+          new import_obsidian7.Notice(`\u26A0\uFE0F ${profile.name} \u8FDC\u7AEF\u8BB0\u5F55\u5DF2\u5220\u9664\uFF0C\u672C\u5730\u6587\u4EF6\u5DF2\u4FDD\u7559`);
+        }
+        return false;
+      }
+      throw new Error(record.error || `\u8BFB\u53D6 ${profile.name} \u8BB0\u5F55\u5931\u8D25`);
+    }
+    const finalRecordId = record.recordId || recordId;
+    const remoteHash = this.hashBitableProfileRemote(profile, finalRecordId, record.fields);
+    const managedContent = buildProfileManagedContent(rawContent, profile);
+    const evaluation = this.syncState.evaluateSync(file.path, managedContent, {
+      kind: "bitable",
+      hash: remoteHash,
+      updatedAt: record.updatedAt
+    });
+    if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+      if (!interactive) {
+        await this.upsertProfileHistoryAndState({
+          file,
+          profile,
+          recordId: finalRecordId,
+          title: file.basename,
+          content: managedContent,
+          remoteHash,
+          remoteUpdatedAt: record.updatedAt,
+          status: "conflict",
+          error: `${syncLabel}\u68C0\u6D4B\u5230 ${profile.name} \u672C\u5730\u548C\u8FDC\u7AEF\u90FD\u6709\u6539\u52A8\uFF0C\u5DF2\u8DF3\u8FC7`
+        });
+        this.log(`${syncLabel} skipped ${profile.name} conflict for ${file.path}`, "warn");
+        return false;
+      }
+      const choice = await this.chooseSmartSyncConflictAction(file.basename);
+      if (choice === "pull") {
+        return await this.pullFileFromBitableProfile(file, profile, options);
+      }
+      if (choice === "push") {
+        return !!await this.syncFileToBitableProfile(file, file.basename, rawContent, profile, void 0, silent);
+      }
+      await this.upsertProfileHistoryAndState({
+        file,
+        profile,
+        recordId: finalRecordId,
+        title: file.basename,
+        content: managedContent,
+        remoteHash,
+        remoteUpdatedAt: record.updatedAt,
+        status: "conflict",
+        error: `\u667A\u80FD\u540C\u6B65\u68C0\u6D4B\u5230 ${profile.name} \u53CC\u5411\u53D8\u66F4\uFF0C\u7528\u6237\u53D6\u6D88`
+      });
+      if (!silent) {
+        new import_obsidian7.Notice(`\u5DF2\u53D6\u6D88\uFF1A${profile.name} \u672C\u5730\u548C\u8FDC\u7AEF\u90FD\u6709\u6539\u52A8`);
+      }
+      return false;
+    }
+    if (evaluation.hasRemoteChanges) {
+      return await this.pullFileFromBitableProfile(file, profile, options);
+    }
+    if (evaluation.hasLocalChanges || !evaluation.hasBaseline) {
+      return !!await this.syncFileToBitableProfile(file, file.basename, rawContent, profile, void 0, silent);
+    }
+    await this.ensureProfileFilePath(file, profile, finalRecordId, record.fields);
+    if (!silent) {
+      new import_obsidian7.Notice(`\u2705 ${profile.name} \u672C\u5730\u548C\u8FDC\u7AEF\u5DF2\u662F\u6700\u65B0`);
+    }
+    return true;
+  }
+  async syncFileToBitableProfile(file, title, rawContent, profile, statusNotice, silent = false) {
+    const now = Date.now();
+    const fieldMetaByName = await this.getBitableProfileFieldMeta(profile);
+    const fields = buildProfileBitableFieldsFromMarkdown(rawContent, profile, fieldMetaByName, now);
+    this.setProfileLogicalField(fields, profile, fieldMetaByName, "title", title || file.basename, now);
+    const recordId = this.getProfileRecordIdForFile(file, rawContent, profile) || void 0;
+    statusNotice == null ? void 0 : statusNotice.setMessage(`\u{1F4CA} \u6B63\u5728\u540C\u6B65 ${profile.name}...`);
+    const upsert = await this.feishuApi.upsertBitableRecord({
+      appToken: profile.appToken,
+      tableId: profile.tableId,
+      recordId,
+      fields
+    });
+    if (!upsert.success) {
+      throw new Error(upsert.error || `\u540C\u6B65 ${profile.name} \u5931\u8D25`);
+    }
+    const finalRecordId = upsert.recordId || recordId;
+    if (!finalRecordId) {
+      throw new Error(`\u540C\u6B65 ${profile.name} \u540E\u672A\u8FD4\u56DE recordId`);
+    }
+    const bitableMeta = await this.feishuApi.getBitableRecord(profile.appToken, profile.tableId, finalRecordId);
+    if (!bitableMeta.success || !bitableMeta.fields) {
+      throw new Error(bitableMeta.error || `\u8BFB\u53D6 ${profile.name} \u540C\u6B65\u540E\u8BB0\u5F55\u5931\u8D25`);
+    }
+    const nextContent = applyProfileRecordToMarkdown(rawContent, profile, finalRecordId, bitableMeta.fields, now, fieldMetaByName);
+    if (nextContent !== rawContent) {
+      await this.app.vault.modify(file, nextContent);
+    }
+    const targetFile = await this.ensureProfileFilePath(file, profile, finalRecordId, bitableMeta.fields);
+    const remoteHash = this.hashBitableProfileRemote(profile, finalRecordId, bitableMeta.fields);
+    await this.upsertProfileHistoryAndState({
+      file: targetFile,
+      profile,
+      recordId: finalRecordId,
+      title: targetFile.basename,
+      content: buildProfileManagedContent(nextContent, profile),
+      remoteHash,
+      remoteUpdatedAt: bitableMeta.updatedAt
+    });
+    if (!silent && !this.settings.suppressShareNotices) {
+      new import_obsidian7.Notice(`\u2705 \u5DF2\u540C\u6B65\u5230 ${profile.name}`);
+    }
+    return finalRecordId;
+  }
+  async syncBitableProfileFromRemote(profile, options) {
+    const result = await this.feishuApi.listBitableRecords({
+      appToken: profile.appToken,
+      tableId: profile.tableId,
+      viewId: profile.viewId
+    });
+    if (!result.success || !result.records) {
+      throw new Error(result.error || `\u8BFB\u53D6 ${profile.name} \u8BB0\u5F55\u5217\u8868\u5931\u8D25`);
+    }
+    let successCount = 0;
+    let failedCount = 0;
+    const fieldMetaByName = await this.getBitableProfileFieldMeta(profile);
+    const remoteRecordIds = new Set(result.records.map((record) => String(record.recordId || "").trim()).filter((recordId) => !!recordId));
+    for (const record of result.records) {
+      try {
+        const ok = await this.syncBitableProfileRecord(profile, record, fieldMetaByName, options);
+        if (ok) {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      } catch (error) {
+        failedCount++;
+        this.log(`Sync ${profile.name} record ${record.recordId} failed: ${this.getErrorMessage(error)}`, "warn");
+      }
+    }
+    await this.markProfileRemoteMissingFromListing(profile, remoteRecordIds);
+    return { total: result.records.length, successCount, failedCount };
+  }
+  async syncBitableProfileRecord(profile, record, fieldMetaByName, options) {
+    const silent = (options == null ? void 0 : options.silent) === true;
+    const interactive = (options == null ? void 0 : options.interactive) !== false;
+    const remoteHash = this.hashBitableProfileRemote(profile, record.recordId, record.fields);
+    let file = await this.findProfileFileByRecordId(profile, record.recordId);
+    if (!file) {
+      await this.ensureProfileTargetFolder(profile.targetDir);
+      const path = await this.buildProfileFilePath(profile, record.recordId, record.fields);
+      const createdContent = buildProfileMarkdownFromRecord(profile, record.recordId, record.fields, Date.now(), fieldMetaByName);
+      const createdFile = await this.app.vault.create(path, createdContent);
+      await this.upsertProfileHistoryAndState({
+        file: createdFile,
+        profile,
+        recordId: record.recordId,
+        title: createdFile.basename,
+        content: buildProfileManagedContent(createdContent, profile),
+        remoteHash,
+        remoteUpdatedAt: record.updatedAt
+      });
+      return true;
+    }
+    const current = await this.app.vault.read(file);
+    const managedContent = buildProfileManagedContent(current, profile);
+    const evaluation = this.syncState.evaluateSync(file.path, managedContent, {
+      kind: "bitable",
+      hash: remoteHash,
+      updatedAt: record.updatedAt
+    });
+    if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+      await this.upsertProfileHistoryAndState({
+        file,
+        profile,
+        recordId: record.recordId,
+        title: file.basename,
+        content: managedContent,
+        remoteHash,
+        remoteUpdatedAt: record.updatedAt,
+        status: "conflict",
+        error: `Profile ${profile.name} \u68C0\u6D4B\u5230\u672C\u5730\u53D7\u7BA1\u5185\u5BB9\u548C\u8FDC\u7AEF\u8BB0\u5F55\u90FD\u6709\u6539\u52A8`
+      });
+      return false;
+    }
+    if (evaluation.hasLocalChanges && !evaluation.hasRemoteChanges) {
+      return !!await this.syncFileToBitableProfile(file, file.basename, current, profile, void 0, silent);
+    }
+    if (evaluation.hasRemoteChanges || !evaluation.hasBaseline) {
+      if (!interactive) {
+        const nextContent = applyProfileRecordToMarkdown(current, profile, record.recordId, record.fields, Date.now(), fieldMetaByName);
+        if (nextContent !== current) {
+          await this.app.vault.modify(file, nextContent);
+        }
+        const targetFile = await this.ensureProfileFilePath(file, profile, record.recordId, record.fields);
+        await this.upsertProfileHistoryAndState({
+          file: targetFile,
+          profile,
+          recordId: record.recordId,
+          title: targetFile.basename,
+          content: buildProfileManagedContent(nextContent, profile),
+          remoteHash,
+          remoteUpdatedAt: record.updatedAt
+        });
+        return true;
+      }
+      return await this.pullFileFromBitableProfile(file, profile, options);
+    }
+    await this.ensureProfileFilePath(file, profile, record.recordId, record.fields);
+    return true;
+  }
   async syncBothTargetsFromLocal(file, options) {
     const latestContent = await this.app.vault.read(file);
     const feishuUrl = this.getFeishuUrlForFile(file, latestContent);
@@ -12780,27 +14862,57 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       revision: remoteMeta == null ? void 0 : remoteMeta.revision,
       updatedAt: remoteMeta == null ? void 0 : remoteMeta.updatedAt
     });
+    const profile = this.getBitableProfileForFile(file, rawContent);
     let bitableRemoteHash;
     let bitableUpdatedAt;
-    const bitableRecordId = this.getBitableRecordIdForFile(file, rawContent);
-    if (bitableRecordId && (!this.settings.bitableAppToken || !this.settings.bitableTableId)) {
+    const bitableContent = profile ? buildProfileManagedContent(rawContent, profile) : rawContent;
+    const bitableRecordId = profile ? this.getProfileRecordIdForFile(file, rawContent, profile) : this.getBitableRecordIdForFile(file, rawContent);
+    const bitableAppToken = profile ? profile.appToken : this.settings.bitableAppToken;
+    const bitableTableId = profile ? profile.tableId : this.settings.bitableTableId;
+    const bitableViewId = profile ? profile.viewId : void 0;
+    if (bitableRecordId && !profile && (!bitableAppToken || !bitableTableId)) {
       throw new Error("\u4E24\u8005\u90FD\u540C\u6B65\u9700\u8981\u586B\u5199 Bitable App Token \u548C Bitable Table ID\uFF0C\u624D\u80FD\u68C0\u67E5\u591A\u7EF4\u8868\u683C\u8FDC\u7AEF\u6539\u52A8");
     }
-    if (bitableRecordId) {
-      const appToken = this.settings.bitableAppToken;
-      const tableId = this.settings.bitableTableId;
-      const record = await this.feishuApi.getBitableRecord(appToken, tableId, bitableRecordId);
-      if (!record.success) {
-        throw new Error(record.error || "\u8BFB\u53D6 Bitable \u8BB0\u5F55\u5931\u8D25");
+    if (bitableRecordId && bitableAppToken && bitableTableId) {
+      const record = await this.feishuApi.getBitableRecord(bitableAppToken, bitableTableId, bitableRecordId);
+      if (!record.success || !record.fields) {
+        throw new Error(record.error || (profile ? `\u8BFB\u53D6 ${profile.name} \u8BB0\u5F55\u5931\u8D25` : "\u8BFB\u53D6 Bitable \u8BB0\u5F55\u5931\u8D25"));
       }
-      bitableRemoteHash = this.hashBitableFields(record.fields);
+      const finalRecordId = record.recordId || bitableRecordId;
+      bitableRemoteHash = profile ? this.hashBitableProfileRemote(profile, finalRecordId, record.fields) : this.hashBitableFields(record.fields);
       bitableUpdatedAt = record.updatedAt;
     }
-    const bitableEvaluation = this.syncState.evaluateSync(file.path, rawContent, {
+    const bitableEvaluation = this.syncState.evaluateSync(file.path, bitableContent, {
       kind: "bitable",
       hash: bitableRemoteHash,
       updatedAt: bitableUpdatedAt
     });
+    const pullBitableTarget = async () => profile ? await this.pullFileFromBitableProfile(file, profile, options) : await this.pullFileFromBitable(file, options);
+    const recordBothConflict = async (direction, error) => {
+      this.syncState.upsert({
+        filePath: file.path,
+        title: file.basename,
+        content: rawContent,
+        docToken: docToken || void 0,
+        url: feishuUrl || void 0,
+        bitableRecordId: bitableRecordId || void 0,
+        bitableProfileId: profile == null ? void 0 : profile.id,
+        bitableAppToken: bitableAppToken || void 0,
+        bitableTableId: bitableTableId || void 0,
+        bitableViewId,
+        direction,
+        status: "conflict",
+        error,
+        remoteHash: bitableRemoteHash,
+        remoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
+        remoteUpdatedAt: Math.max((remoteMeta == null ? void 0 : remoteMeta.updatedAt) || 0, bitableUpdatedAt || 0) || void 0,
+        docRemoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
+        docRemoteUpdatedAt: remoteMeta == null ? void 0 : remoteMeta.updatedAt,
+        bitableRemoteHash,
+        bitableRemoteUpdatedAt: bitableUpdatedAt
+      });
+      await this.saveSettings();
+    };
     const plan = planSmartSyncBoth(
       {
         mapped: !!feishuUrl,
@@ -12832,29 +14944,11 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       return await this.updateFromFeishu(file, options) && await this.syncBothTargetsFromLocal(file, options);
     }
     if (plan.action === "pull-bitable") {
-      return await this.pullFileFromBitable(file, options) && await this.syncBothTargetsFromLocal(file, options);
+      return await pullBitableTarget() && await this.syncBothTargetsFromLocal(file, options);
     }
     if (plan.action === "choose-remote-source") {
       if (!interactive) {
-        this.syncState.upsert({
-          filePath: file.path,
-          title: file.basename,
-          content: rawContent,
-          docToken: docToken || void 0,
-          url: feishuUrl || void 0,
-          bitableRecordId: bitableRecordId || void 0,
-          direction: "obsidian-to-feishu",
-          status: "conflict",
-          error: `${syncLabel}\u68C0\u6D4B\u5230\u98DE\u4E66\u6587\u6863\u548C\u591A\u7EF4\u8868\u683C\u90FD\u6709\u8FDC\u7AEF\u6539\u52A8\uFF0C\u5DF2\u8DF3\u8FC7`,
-          remoteHash: bitableRemoteHash,
-          remoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
-          remoteUpdatedAt: Math.max((remoteMeta == null ? void 0 : remoteMeta.updatedAt) || 0, bitableUpdatedAt || 0) || void 0,
-          docRemoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
-          docRemoteUpdatedAt: remoteMeta == null ? void 0 : remoteMeta.updatedAt,
-          bitableRemoteHash,
-          bitableRemoteUpdatedAt: bitableUpdatedAt
-        });
-        await this.saveSettings();
+        await recordBothConflict("obsidian-to-feishu", `${syncLabel}\u68C0\u6D4B\u5230\u98DE\u4E66\u6587\u6863\u548C\u591A\u7EF4\u8868\u683C\u90FD\u5B58\u5728\u8FDC\u7AEF\u6539\u52A8\uFF0C\u5DF2\u8DF3\u8FC7`);
         this.log(`${syncLabel} skipped dual-remote conflict for ${file.path}`, "warn");
         return false;
       }
@@ -12863,77 +14957,29 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
         return await this.updateFromFeishu(file, options) && await this.syncBothTargetsFromLocal(file, options);
       }
       if (choice === "bitable") {
-        return await this.pullFileFromBitable(file, options) && await this.syncBothTargetsFromLocal(file, options);
+        return await pullBitableTarget() && await this.syncBothTargetsFromLocal(file, options);
       }
-      this.syncState.upsert({
-        filePath: file.path,
-        title: file.basename,
-        content: rawContent,
-        docToken: docToken || void 0,
-        url: feishuUrl || void 0,
-        bitableRecordId: bitableRecordId || void 0,
-        direction: "obsidian-to-feishu",
-        status: "conflict",
-        error: "\u667A\u80FD\u540C\u6B65\u68C0\u6D4B\u5230\u98DE\u4E66\u6587\u6863\u548C\u591A\u7EF4\u8868\u683C\u5747\u6709\u8FDC\u7AEF\u6539\u52A8\uFF0C\u7528\u6237\u53D6\u6D88",
-        remoteHash: bitableRemoteHash,
-        remoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
-        remoteUpdatedAt: Math.max((remoteMeta == null ? void 0 : remoteMeta.updatedAt) || 0, bitableUpdatedAt || 0) || void 0,
-        docRemoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
-        docRemoteUpdatedAt: remoteMeta == null ? void 0 : remoteMeta.updatedAt,
-        bitableRemoteHash,
-        bitableRemoteUpdatedAt: bitableUpdatedAt
-      });
-      await this.saveSettings();
+      await recordBothConflict("obsidian-to-feishu", "\u667A\u80FD\u540C\u6B65\u68C0\u6D4B\u5230\u98DE\u4E66\u6587\u6863\u548C\u591A\u7EF4\u8868\u683C\u5747\u6709\u8FDC\u7AEF\u6539\u52A8\uFF0C\u7528\u6237\u53D6\u6D88");
       if (!silent) {
-        new import_obsidian7.Notice("\u5DF2\u53D6\u6D88\uFF1A\u98DE\u4E66\u6587\u6863\u548C\u591A\u7EF4\u8868\u683C\u90FD\u6709\u8FDC\u7AEF\u6539\u52A8");
+        new import_obsidian7.Notice("\u5DF2\u53D6\u6D88\uFF1A\u98DE\u4E66\u6587\u6863\u548C\u591A\u7EF4\u8868\u683C\u90FD\u5B58\u5728\u8FDC\u7AEF\u6539\u52A8");
       }
       return false;
     }
     if (plan.action === "choose-local-vs-feishu" || plan.action === "choose-local-vs-bitable") {
       if (!interactive) {
-        this.syncState.upsert({
-          filePath: file.path,
-          title: file.basename,
-          content: rawContent,
-          docToken: docToken || void 0,
-          url: feishuUrl || void 0,
-          bitableRecordId: bitableRecordId || void 0,
-          direction: plan.action === "choose-local-vs-bitable" ? "bitable" : "obsidian-to-feishu",
-          status: "conflict",
-          error: `${syncLabel}\u68C0\u6D4B\u5230 ${plan.reason}\uFF0C\u5DF2\u8DF3\u8FC7`,
-          remoteHash: bitableRemoteHash,
-          remoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
-          remoteUpdatedAt: Math.max((remoteMeta == null ? void 0 : remoteMeta.updatedAt) || 0, bitableUpdatedAt || 0) || void 0,
-          docRemoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
-          docRemoteUpdatedAt: remoteMeta == null ? void 0 : remoteMeta.updatedAt,
-          bitableRemoteHash,
-          bitableRemoteUpdatedAt: bitableUpdatedAt
-        });
-        await this.saveSettings();
+        await recordBothConflict(
+          plan.action === "choose-local-vs-bitable" ? "bitable" : "obsidian-to-feishu",
+          `${syncLabel}\u68C0\u6D4B\u5230 ${plan.reason}\uFF0C\u5DF2\u8DF3\u8FC7`
+        );
         this.log(`${syncLabel} skipped local-vs-remote conflict for ${file.path}`, "warn");
         return false;
       }
       const choice = await this.chooseSmartSyncConflictAction(file.basename);
       if (choice === "cancel") {
-        this.syncState.upsert({
-          filePath: file.path,
-          title: file.basename,
-          content: rawContent,
-          docToken: docToken || void 0,
-          url: feishuUrl || void 0,
-          bitableRecordId: bitableRecordId || void 0,
-          direction: plan.action === "choose-local-vs-bitable" ? "bitable" : "obsidian-to-feishu",
-          status: "conflict",
-          error: `\u667A\u80FD\u540C\u6B65\u68C0\u6D4B\u5230 ${plan.reason}\uFF0C\u7528\u6237\u53D6\u6D88`,
-          remoteHash: bitableRemoteHash,
-          remoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
-          remoteUpdatedAt: Math.max((remoteMeta == null ? void 0 : remoteMeta.updatedAt) || 0, bitableUpdatedAt || 0) || void 0,
-          docRemoteRevision: remoteMeta == null ? void 0 : remoteMeta.revision,
-          docRemoteUpdatedAt: remoteMeta == null ? void 0 : remoteMeta.updatedAt,
-          bitableRemoteHash,
-          bitableRemoteUpdatedAt: bitableUpdatedAt
-        });
-        await this.saveSettings();
+        await recordBothConflict(
+          plan.action === "choose-local-vs-bitable" ? "bitable" : "obsidian-to-feishu",
+          `\u667A\u80FD\u540C\u6B65\u68C0\u6D4B\u5230 ${plan.reason}\uFF0C\u7528\u6237\u53D6\u6D88`
+        );
         if (!silent) {
           new import_obsidian7.Notice(`\u5DF2\u53D6\u6D88\uFF1A${plan.reason}`);
         }
@@ -12941,7 +14987,7 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       }
       if (choice === "pull") {
         if (plan.action === "choose-local-vs-bitable") {
-          if (!await this.pullFileFromBitable(file, options)) {
+          if (!await pullBitableTarget()) {
             return false;
           }
         } else {
@@ -13736,8 +15782,16 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     });
   }
   async loadSettings() {
+    var _a;
     const loadedData = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
+    this.settings.bitableProfiles = mergeDefaultBitableProfiles(this.settings.bitableProfiles);
+    if (!this.settings.activeBitableProfileId || !this.settings.bitableProfiles.some((profile) => profile.id === this.settings.activeBitableProfileId)) {
+      this.settings.activeBitableProfileId = ((_a = this.settings.bitableProfiles[0]) == null ? void 0 : _a.id) || "";
+    }
+    if (!Array.isArray(this.settings.scheduledBitableProfileIds)) {
+      this.settings.scheduledBitableProfileIds = [DEFAULT_IOTO_TASK_PROFILE.id];
+    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -14108,6 +16162,12 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     const silent = (options == null ? void 0 : options.silent) === true;
     const statusNotice = silent || this.settings.suppressShareNotices ? void 0 : new import_obsidian7.Notice("\u{1F4CA} \u6B63\u5728\u4ECE\u591A\u7EF4\u8868\u683C\u62C9\u53D6...", 0);
     try {
+      const profileContent = await this.app.vault.read(file);
+      const profile = this.getBitableProfileForFile(file, profileContent);
+      if (profile) {
+        statusNotice == null ? void 0 : statusNotice.hide();
+        return await this.pullFileFromBitableProfile(file, profile, options);
+      }
       if (!this.settings.bitableAppToken || !this.settings.bitableTableId) {
         throw new Error("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u586B\u5199 Bitable App Token \u548C Bitable Table ID");
       }
@@ -14228,6 +16288,99 @@ ${nextBody}`);
       return false;
     }
   }
+  async pullFileFromBitableProfile(file, profile, options) {
+    const interactive = (options == null ? void 0 : options.interactive) !== false;
+    const silent = (options == null ? void 0 : options.silent) === true;
+    const statusNotice = silent || this.settings.suppressShareNotices ? void 0 : new import_obsidian7.Notice(`\u{1F4CA} \u6B63\u5728\u4ECE ${profile.name} \u62C9\u53D6...`, 0);
+    try {
+      const current = await this.app.vault.read(file);
+      const recordId = this.getProfileRecordIdForFile(file, current, profile);
+      if (!recordId) {
+        throw new Error(`\u5F53\u524D\u6587\u4EF6\u6CA1\u6709\u5173\u8054\u7684 ${profile.name} recordId`);
+      }
+      const record = await this.feishuApi.getBitableRecord(profile.appToken, profile.tableId, recordId);
+      if (!record.success || !record.fields) {
+        if (this.isBitableRecordMissingError(record.error)) {
+          await this.markProfileRemoteMissing(file, profile, recordId);
+          statusNotice == null ? void 0 : statusNotice.hide();
+          if (!silent) {
+            new import_obsidian7.Notice(`\u26A0\uFE0F ${profile.name} \u8FDC\u7AEF\u8BB0\u5F55\u5DF2\u5220\u9664\uFF0C\u672C\u5730\u6587\u4EF6\u5DF2\u4FDD\u7559`);
+          }
+          return false;
+        }
+        throw new Error(record.error || `\u8BFB\u53D6 ${profile.name} \u8BB0\u5F55\u5931\u8D25`);
+      }
+      const finalRecordId = record.recordId || recordId;
+      const remoteHash = this.hashBitableProfileRemote(profile, finalRecordId, record.fields);
+      const fieldMetaByName = await this.getBitableProfileFieldMeta(profile);
+      const nextContent = applyProfileRecordToMarkdown(current, profile, finalRecordId, record.fields, Date.now(), fieldMetaByName);
+      const currentManaged = buildProfileManagedContent(current, profile);
+      const nextManaged = buildProfileManagedContent(nextContent, profile);
+      const localChange = this.syncState.getLocalChange(file.path, currentManaged);
+      if (localChange.hasLocalChanges && nextManaged !== currentManaged) {
+        if (!interactive) {
+          await this.upsertProfileHistoryAndState({
+            file,
+            profile,
+            recordId: finalRecordId,
+            title: file.basename,
+            content: currentManaged,
+            remoteHash,
+            remoteUpdatedAt: record.updatedAt,
+            status: "conflict",
+            error: `\u5B9A\u65F6\u540C\u6B65\u68C0\u6D4B\u5230 ${profile.name} \u672C\u5730\u53D7\u7BA1\u5185\u5BB9\u5B58\u5728\u672A\u540C\u6B65\u6539\u52A8\uFF0C\u5DF2\u8DF3\u8FC7\u8FDC\u7AEF\u8986\u76D6`
+          });
+          this.log(`Scheduled sync skipped ${profile.name} overwrite for ${file.path}`, "warn");
+          return false;
+        }
+        statusNotice == null ? void 0 : statusNotice.hide();
+        const shouldOverwrite = await this.confirmOverwriteLocalChanges(file.basename, localChange.lastHash || "", localChange.currentHash, profile.name);
+        if (!shouldOverwrite) {
+          await this.upsertProfileHistoryAndState({
+            file,
+            profile,
+            recordId: finalRecordId,
+            title: file.basename,
+            content: currentManaged,
+            remoteHash,
+            remoteUpdatedAt: record.updatedAt,
+            status: "conflict",
+            error: `\u7528\u6237\u53D6\u6D88\u4ECE ${profile.name} \u8986\u76D6\u672C\u5730\u53D7\u7BA1\u5185\u5BB9`
+          });
+          return false;
+        }
+        statusNotice == null ? void 0 : statusNotice.setMessage("\u{1F4DD} \u6B63\u5728\u5199\u5165\u672C\u5730\u6587\u4EF6...");
+      }
+      const backupPath = nextContent !== current ? await this.backupBeforeRemoteOverwrite(file, current, profile.name) : null;
+      if (nextContent !== current) {
+        await this.app.vault.modify(file, nextContent);
+      }
+      const targetFile = await this.ensureProfileFilePath(file, profile, finalRecordId, record.fields);
+      await this.upsertProfileHistoryAndState({
+        file: targetFile,
+        profile,
+        recordId: finalRecordId,
+        title: targetFile.basename,
+        content: nextManaged,
+        remoteHash,
+        remoteUpdatedAt: record.updatedAt
+      });
+      statusNotice == null ? void 0 : statusNotice.hide();
+      if (!silent) {
+        new import_obsidian7.Notice(backupPath ? `\u2705 \u5DF2\u4ECE ${profile.name} \u66F4\u65B0\u672C\u5730\u6587\u4EF6
+\u5907\u4EFD\uFF1A${backupPath}` : `\u2705 \u5DF2\u4ECE ${profile.name} \u66F4\u65B0\u672C\u5730\u6587\u4EF6`);
+      }
+      return true;
+    } catch (error) {
+      statusNotice == null ? void 0 : statusNotice.hide();
+      if (!silent) {
+        this.handleError(error, `\u4ECE ${profile.name} \u66F4\u65B0`);
+      } else {
+        this.log(`Pull from ${profile.name} failed for ${file.path}: ${this.getErrorMessage(error)}`, "warn");
+      }
+      return false;
+    }
+  }
   bitableFieldToPlainText(value) {
     return bitableFieldToPlainText(value);
   }
@@ -14304,6 +16457,10 @@ ${nextBody}`);
   }
   async syncFileToBitable(file, title, rawContent, processResult, statusNotice, silent = false) {
     var _a;
+    const profile = this.getBitableProfileForFile(file, rawContent);
+    if (profile) {
+      return await this.syncFileToBitableProfile(file, title, rawContent, profile, statusNotice, silent);
+    }
     try {
       if (!this.settings.bitableAppToken || !this.settings.bitableTableId) {
         throw new Error("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u586B\u5199 Bitable App Token \u548C Bitable Table ID");
@@ -14577,8 +16734,8 @@ ${normalized}`;
     const fm = normalized.slice(4, endIdx);
     const lines = fm.split("\n");
     let found = false;
-    const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const keyRe = new RegExp(`^${escapeRegExp(k)}\\s*:`);
+    const escapeRegExp2 = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const keyRe = new RegExp(`^${escapeRegExp2(k)}\\s*:`);
     const nextLines = lines.map((line) => {
       if (!found && keyRe.test(line)) {
         found = true;

@@ -1,5 +1,5 @@
 import { Plugin, Notice, TFile, Menu, Editor, MarkdownView, Modal, normalizePath } from 'obsidian';
-import { FeishuSettings, ShareResult, SyncDirection, SyncTarget, ScheduledSyncScope, ScheduledSyncReport } from './src/types';
+import { BitableSyncProfile, FeishuSettings, ShareResult, SyncDirection, SyncTarget, ScheduledSyncScope, ScheduledSyncReport } from './src/types';
 import { DEFAULT_SETTINGS, SUCCESS_NOTICE_TEMPLATE } from './src/constants';
 import { FeishuApiService } from './src/feishu-api';
 import { FeishuSettingTab } from './src/settings';
@@ -9,6 +9,20 @@ import { DocxBlocksToMarkdown } from './src/docx-blocks-to-markdown';
 import { SyncStateService } from './src/sync-state';
 import { planSmartSyncBoth } from './src/smart-sync-plan';
 import { bitableFieldToFrontMatterValue, bitableFieldToPlainText, normalizeBitableWriteValue } from './src/bitable-fields';
+import {
+	applyProfileRecordToMarkdown,
+	buildProfileBitableFieldsFromMarkdown,
+	buildProfileManagedContent,
+	buildProfileMarkdownFromRecord,
+	buildProfileRemoteManagedContent,
+	DEFAULT_IOTO_TASK_PROFILE,
+	getProfileRecordIdFromMarkdown,
+	mergeDefaultBitableProfiles,
+	renderProfileFileName,
+	resolveProfileFieldName,
+	selectBitableProfileForFile,
+	selectScheduledBitableProfiles
+} from './src/bitable-profile';
 
 type ShareFileOptions = {
 	forceUpdateUrl?: string;
@@ -43,6 +57,9 @@ export default class FeishuPlugin extends Plugin {
 	private scheduledSyncIntervalId: number | null = null;
 	private scheduledSyncStartupTimeoutId: number | null = null;
 	private scheduledSyncInProgress: boolean = false;
+	private scheduledProfileIntervalIds: Map<string, number> = new Map();
+	private scheduledProfileStartupTimeoutIds: Map<string, number> = new Map();
+	private scheduledProfileInProgress: Set<string> = new Set();
 
 	async onload(): Promise<void> {
 		// 加载设置
@@ -447,23 +464,42 @@ export default class FeishuPlugin extends Plugin {
 			window.clearTimeout(this.scheduledSyncStartupTimeoutId);
 			this.scheduledSyncStartupTimeoutId = null;
 		}
+		for (const intervalId of this.scheduledProfileIntervalIds.values()) {
+			window.clearInterval(intervalId);
+		}
+		this.scheduledProfileIntervalIds.clear();
+		for (const timeoutId of this.scheduledProfileStartupTimeoutIds.values()) {
+			window.clearTimeout(timeoutId);
+		}
+		this.scheduledProfileStartupTimeoutIds.clear();
 	}
 
 	private configureScheduledSync(skipStartup: boolean = false): void {
 		this.clearScheduledSyncTimers();
-		if (!this.settings.enableScheduledSync) {
-			return;
-		}
-		const intervalMinutes = this.normalizeScheduledSyncIntervalMinutes(this.settings.scheduledSyncIntervalMinutes);
-		const intervalMs = intervalMinutes * 60 * 1000;
-		this.scheduledSyncIntervalId = window.setInterval(() => {
-			void this.runScheduledSmartSync('interval');
-		}, intervalMs);
+		if (this.settings.enableScheduledSync) {
+			const intervalMinutes = this.normalizeScheduledSyncIntervalMinutes(this.settings.scheduledSyncIntervalMinutes);
+			const intervalMs = intervalMinutes * 60 * 1000;
+			this.scheduledSyncIntervalId = window.setInterval(() => {
+				void this.runScheduledSmartSync('interval');
+			}, intervalMs);
 
-		if (!skipStartup && this.settings.scheduledSyncRunOnStartup) {
-			this.scheduledSyncStartupTimeoutId = window.setTimeout(() => {
-				void this.runScheduledSmartSync('startup');
-			}, 15000);
+			if (!skipStartup && this.settings.scheduledSyncRunOnStartup) {
+				this.scheduledSyncStartupTimeoutId = window.setTimeout(() => {
+					void this.runScheduledSmartSync('startup');
+				}, 15000);
+			}
+		}
+		for (const profile of this.getScheduledBitableProfiles()) {
+			const intervalMinutes = this.normalizeScheduledSyncIntervalMinutes(profile.scheduledSyncIntervalMinutes);
+			const intervalMs = intervalMinutes * 60 * 1000;
+			this.scheduledProfileIntervalIds.set(profile.id, window.setInterval(() => {
+				void this.runScheduledBitableProfileSync(profile.id, 'interval');
+			}, intervalMs));
+			if (!skipStartup && profile.scheduledSyncRunOnStartup) {
+				this.scheduledProfileStartupTimeoutIds.set(profile.id, window.setTimeout(() => {
+					void this.runScheduledBitableProfileSync(profile.id, 'startup');
+				}, 15000));
+			}
 		}
 	}
 
@@ -531,11 +567,12 @@ export default class FeishuPlugin extends Plugin {
 		let successCount = 0;
 		let failedCount = 0;
 		let lastError = '';
+		const initialTotal = files.length;
 		await this.persistScheduledSyncReport({
 			lastRunAt: startedAt,
 			lastTrigger: trigger,
 			status: 'running',
-			totalFiles: files.length,
+			totalFiles: initialTotal,
 			successCount: 0,
 			failedCount: 0,
 			skippedCount: 0,
@@ -574,19 +611,20 @@ export default class FeishuPlugin extends Plugin {
 		const status: ScheduledSyncReport['status'] = failedCount === 0
 			? 'success'
 			: (successCount > 0 ? 'partial' : 'failed');
+		const finalTotal = files.length;
 		const message = status === 'success'
-			? `定时同步完成：成功 ${successCount}/${files.length}`
+			? `定时同步完成：成功 ${successCount}/${finalTotal}`
 			: status === 'partial'
 				? `定时同步部分完成：成功 ${successCount}，失败 ${failedCount}`
 				: (pauseUntil
 					? `定时同步连续失败 ${nextFailureStreak} 次，已暂停 60 分钟`
-					: `定时同步失败：${failedCount}/${files.length}`);
+					: `定时同步失败：${failedCount}/${finalTotal}`);
 		await this.persistScheduledSyncReport({
 			lastRunAt: startedAt,
 			lastDurationMs: durationMs,
 			lastTrigger: trigger,
 			status: pauseUntil ? 'paused' : status,
-			totalFiles: files.length,
+			totalFiles: finalTotal,
 			successCount,
 			failedCount,
 			skippedCount: 0,
@@ -595,9 +633,62 @@ export default class FeishuPlugin extends Plugin {
 			failureStreak: nextFailureStreak,
 			pauseUntil
 		});
-		this.log(`Scheduled sync (${trigger}) finished: success ${successCount}/${files.length}, failed ${failedCount}`);
+		this.log(`Scheduled sync (${trigger}) finished: success ${successCount}/${finalTotal}, failed ${failedCount}`);
 		if (showSummaryNotice) {
 			new Notice(message);
+		}
+	}
+
+	async runScheduledBitableProfileSync(
+		profileId: string,
+		trigger: 'startup' | 'interval' | 'manual' = 'manual',
+		showSummaryNotice: boolean = false
+	): Promise<boolean> {
+		const profile = this.getBitableProfileById(profileId);
+		if (!profile || profile.enabled === false) {
+			if (showSummaryNotice) {
+				new Notice('未找到可同步的任务 Profile');
+			}
+			return false;
+		}
+		if (this.scheduledProfileInProgress.has(profile.id)) {
+			if (showSummaryNotice) {
+				new Notice(`${profile.name} 正在同步中，请稍后再试`);
+			}
+			return false;
+		}
+		if (!this.settings.accessToken || !this.settings.userInfo) {
+			if (showSummaryNotice) {
+				new Notice('请先在设置中完成飞书授权');
+			}
+			return false;
+		}
+
+		this.scheduledProfileInProgress.add(profile.id);
+		try {
+			const result = await this.syncBitableProfileFromRemote(profile, {
+				interactive: false,
+				silent: true,
+				source: 'scheduled'
+			});
+			const message = result.failedCount === 0
+				? `${profile.name} 同步完成：成功 ${result.successCount}/${result.total}`
+				: (result.successCount > 0
+					? `${profile.name} 部分完成：成功 ${result.successCount}，失败 ${result.failedCount}`
+					: `${profile.name} 同步失败：${result.failedCount}/${result.total}`);
+			this.log(`Scheduled profile sync (${trigger}) finished for ${profile.id}: success ${result.successCount}/${result.total}, failed ${result.failedCount}`);
+			if (showSummaryNotice) {
+				new Notice(message);
+			}
+			return result.failedCount === 0;
+		} catch (error) {
+			this.log(`Scheduled profile sync (${trigger}) failed for ${profile.id}: ${this.getErrorMessage(error)}`, 'warn');
+			if (showSummaryNotice) {
+				new Notice(`${profile.name} 同步失败：${this.getErrorMessage(error)}`);
+			}
+			return false;
+		} finally {
+			this.scheduledProfileInProgress.delete(profile.id);
 		}
 	}
 
@@ -664,14 +755,315 @@ export default class FeishuPlugin extends Plugin {
 		return this.app.vault.getMarkdownFiles().find((file: TFile) => file.path === path) || null;
 	}
 
+	private getBitableProfiles(): BitableSyncProfile[] {
+		this.settings.bitableProfiles = mergeDefaultBitableProfiles(this.settings.bitableProfiles);
+		return this.settings.bitableProfiles;
+	}
+
+	private getBitableProfileById(profileId: string): BitableSyncProfile | null {
+		const id = String(profileId || '').trim();
+		if (!id) {
+			return null;
+		}
+		return this.getBitableProfiles().find((profile) => profile.id === id) || null;
+	}
+
+	private getBitableProfileForFile(file: TFile, content: string): BitableSyncProfile | null {
+		return selectBitableProfileForFile(this.getBitableProfiles(), file.path, content);
+	}
+
+	private getScheduledBitableProfiles(): BitableSyncProfile[] {
+		return selectScheduledBitableProfiles(this.getBitableProfiles(), this.settings.scheduledBitableProfileIds || []);
+	}
+
+	private getProfileRecordIdForFile(file: TFile, content: string, profile: BitableSyncProfile): string {
+		const direct = getProfileRecordIdFromMarkdown(content);
+		if (direct) {
+			return direct;
+		}
+		const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
+		const existing = history.find((item) => item && item.filePath === file.path && this.historyItemMatchesProfile(item, profile));
+		const state = this.syncState.getState(file.path);
+		if (existing?.bitableRecordId) {
+			return String(existing.bitableRecordId);
+		}
+		if (state?.bitableRecordId && this.syncStateItemMatchesProfile(state, profile)) {
+			return String(state.bitableRecordId);
+		}
+		return '';
+	}
+
+	private historyItemMatchesProfile(item: any, profile: BitableSyncProfile): boolean {
+		if (!item) {
+			return false;
+		}
+		if (item.bitableProfileId) {
+			return String(item.bitableProfileId) === profile.id;
+		}
+		if (item.bitableTableId) {
+			return String(item.bitableTableId) === profile.tableId;
+		}
+		return true;
+	}
+
+	private syncStateItemMatchesProfile(item: any, profile: BitableSyncProfile): boolean {
+		if (!item) {
+			return false;
+		}
+		if (item.bitableProfileId) {
+			return String(item.bitableProfileId) === profile.id;
+		}
+		if (item.bitableTableId) {
+			return String(item.bitableTableId) === profile.tableId;
+		}
+		return true;
+	}
+
+	private isBitableRecordMissingError(error: unknown): boolean {
+		const message = this.getErrorMessage(error);
+		return /404/.test(message)
+			|| /not\s*found/i.test(message)
+			|| /record.*(deleted|not\s*found|not\s*exist)/i.test(message)
+			|| /记录.*(不存在|已删除)/.test(message)
+			|| /已删除.*记录/.test(message);
+	}
+
+	private buildProfileRemoteDeletedMessage(profile: BitableSyncProfile, recordId?: string): string {
+		const suffix = recordId ? `（recordId: ${recordId}）` : '';
+		return `${profile.name} 远端记录已删除${suffix}，本地文件暂时保留`;
+	}
+
+	private async markProfileRemoteMissing(file: TFile, profile: BitableSyncProfile, recordId?: string, title?: string): Promise<void> {
+		this.syncState.upsert({
+			filePath: file.path,
+			title: title || file.basename,
+			bitableRecordId: recordId,
+			bitableProfileId: profile.id,
+			bitableAppToken: profile.appToken,
+			bitableTableId: profile.tableId,
+			bitableViewId: profile.viewId,
+			direction: 'bitable',
+			status: 'error',
+			error: this.buildProfileRemoteDeletedMessage(profile, recordId)
+		});
+		await this.saveSettings();
+	}
+
+	private async markProfileRemoteMissingFromListing(profile: BitableSyncProfile, remoteRecordIds: Set<string>): Promise<void> {
+		const candidates = new Map<string, { filePath: string; title?: string; recordId: string }>();
+		const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
+		const states = Array.isArray(this.settings.syncStates) ? this.settings.syncStates : [];
+		const collect = (item: any, title?: string) => {
+			if (!item || !this.historyItemMatchesProfile(item, profile) && !this.syncStateItemMatchesProfile(item, profile)) {
+				return;
+			}
+			const filePath = String(item.filePath || '').trim();
+			const recordId = String(item.bitableRecordId || '').trim();
+			if (!filePath || !recordId || remoteRecordIds.has(recordId)) {
+				return;
+			}
+			const file = this.app.vault.getAbstractFileByPath(filePath);
+			if (!(file instanceof TFile) || file.extension !== 'md') {
+				return;
+			}
+			if (!candidates.has(filePath)) {
+				candidates.set(filePath, { filePath, title, recordId });
+			}
+		};
+		history.forEach((item) => collect(item, item?.title));
+		states.forEach((item) => collect(item, item?.title));
+		let changed = false;
+		for (const candidate of candidates.values()) {
+			const existing = this.syncState.getState(candidate.filePath);
+			const nextError = this.buildProfileRemoteDeletedMessage(profile, candidate.recordId);
+			if (existing?.status === 'error' && existing.lastError === nextError) {
+				continue;
+			}
+			this.syncState.upsert({
+				filePath: candidate.filePath,
+				title: candidate.title,
+				bitableRecordId: candidate.recordId,
+				bitableProfileId: profile.id,
+				bitableAppToken: profile.appToken,
+				bitableTableId: profile.tableId,
+				bitableViewId: profile.viewId,
+				direction: 'bitable',
+				status: 'error',
+				error: nextError
+			});
+			changed = true;
+		}
+		if (changed) {
+			await this.saveSettings();
+		}
+	}
+
+	private hashBitableProfileRemote(profile: BitableSyncProfile, recordId: string, fields: Record<string, any>): string {
+		return this.syncState.hashContent(buildProfileRemoteManagedContent(profile, recordId, fields));
+	}
+
+	private async getBitableProfileFieldMeta(profile: BitableSyncProfile): Promise<Map<string, any>> {
+		const fieldsMeta = await this.feishuApi.getBitableTableFields(profile.appToken, profile.tableId);
+		if (!fieldsMeta.success || !fieldsMeta.fields) {
+			throw new Error(fieldsMeta.error || `读取 Profile ${profile.name} 字段失败`);
+		}
+		return new Map(fieldsMeta.fields.map((field) => [field.name, field] as const));
+	}
+
+	private setProfileLogicalField(
+		fields: Record<string, any>,
+		profile: BitableSyncProfile,
+		fieldMetaByName: Map<string, any>,
+		logicalKey: string,
+		value: any,
+		now: number
+	): void {
+		if (value === undefined || value === null || value === '') {
+			return;
+		}
+		const fieldName = resolveProfileFieldName(profile, logicalKey, new Set(fieldMetaByName.keys()));
+		if (!fieldName) {
+			return;
+		}
+		fields[fieldName] = normalizeBitableWriteValue(value, fieldMetaByName.get(fieldName), now);
+	}
+
+	private async ensureProfileTargetFolder(folderPath: string): Promise<void> {
+		const normalized = normalizePath(String(folderPath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''));
+		if (!normalized) {
+			return;
+		}
+		const parts = normalized.split('/').filter((part) => !!part);
+		let current = '';
+		for (const part of parts) {
+			current = current ? `${current}/${part}` : part;
+			const exists = await this.app.vault.adapter.exists(current);
+			if (!exists) {
+				await this.app.vault.createFolder(current);
+			}
+		}
+	}
+
+	private async buildProfileFilePath(profile: BitableSyncProfile, recordId: string, fields: Record<string, any>): Promise<string> {
+		const targetDir = normalizePath(String(profile.targetDir || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''));
+		const baseName = renderProfileFileName(profile, recordId, fields);
+		const first = normalizePath(`${targetDir}/${baseName}.md`);
+		const existing = this.getMarkdownFileByPath(first);
+		if (!existing) {
+			return first;
+		}
+		const current = await this.app.vault.read(existing);
+		if (getProfileRecordIdFromMarkdown(current) === recordId) {
+			return first;
+		}
+		return normalizePath(`${targetDir}/${baseName}-${recordId}.md`);
+	}
+
+	private async ensureProfileFilePath(file: TFile, profile: BitableSyncProfile, recordId: string, fields: Record<string, any>): Promise<TFile> {
+		await this.ensureProfileTargetFolder(profile.targetDir);
+		const targetPath = await this.buildProfileFilePath(profile, recordId, fields);
+		if (!targetPath || targetPath === file.path) {
+			return file;
+		}
+		if (this.app.fileManager && typeof this.app.fileManager.renameFile === 'function') {
+			await this.app.fileManager.renameFile(file, targetPath);
+		} else {
+			await this.app.vault.rename(file, targetPath);
+		}
+		return this.getMarkdownFileByPath(targetPath) || file;
+	}
+
+	private async findProfileFileByRecordId(profile: BitableSyncProfile, recordId: string): Promise<TFile | null> {
+		const rid = String(recordId || '').trim();
+		if (!rid) {
+			return null;
+		}
+		const states = Array.isArray(this.settings.syncStates) ? this.settings.syncStates : [];
+		const state = states.find((item) => item
+			&& item.bitableRecordId === rid
+			&& this.syncStateItemMatchesProfile(item, profile)
+			&& item.filePath);
+		if (state?.filePath) {
+			const file = this.getMarkdownFileByPath(state.filePath);
+			if (file) {
+				return file;
+			}
+		}
+		const files = this.app.vault.getMarkdownFiles().filter((file: TFile) => {
+			const targetDir = normalizePath(String(profile.targetDir || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''));
+			return targetDir ? (file.path === targetDir || file.path.startsWith(`${targetDir}/`)) : true;
+		});
+		for (const file of files) {
+			try {
+				const content = await this.app.vault.read(file);
+				if (getProfileRecordIdFromMarkdown(content) === rid) {
+					return file;
+				}
+			} catch {
+			}
+		}
+		return null;
+	}
+
+	private async upsertProfileHistoryAndState(params: {
+		file: TFile;
+		profile: BitableSyncProfile;
+		recordId: string;
+		title: string;
+		content: string;
+		remoteHash?: string;
+		remoteUpdatedAt?: number;
+		status?: 'synced' | 'conflict' | 'error';
+		error?: string;
+	}): Promise<void> {
+		const now = Date.now();
+		const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
+		const idx = history.findIndex((item) => item && item.filePath === params.file.path);
+		const item = {
+			filePath: params.file.path,
+			title: params.title,
+			bitableRecordId: params.recordId,
+			bitableProfileId: params.profile.id,
+			bitableAppToken: params.profile.appToken,
+			bitableTableId: params.profile.tableId,
+			bitableViewId: params.profile.viewId,
+			updatedAt: now
+		};
+		if (idx >= 0) {
+			history[idx] = { ...history[idx], ...item };
+		} else {
+			history.unshift(item);
+		}
+		this.settings.uploadHistory = history;
+		this.syncState.upsert({
+			filePath: params.file.path,
+			title: params.title,
+			content: params.content,
+			bitableRecordId: params.recordId,
+			bitableProfileId: params.profile.id,
+			bitableAppToken: params.profile.appToken,
+			bitableTableId: params.profile.tableId,
+			bitableViewId: params.profile.viewId,
+			direction: 'bitable',
+			status: params.status,
+			error: params.error,
+			remoteHash: params.remoteHash,
+			remoteUpdatedAt: params.remoteUpdatedAt,
+			bitableRemoteHash: params.remoteHash,
+			bitableRemoteUpdatedAt: params.remoteUpdatedAt
+		});
+		await this.saveSettings();
+	}
+
 	private getBitableRecordIdForFile(file: TFile, content: string): string {
 		const history = Array.isArray(this.settings.uploadHistory) ? this.settings.uploadHistory : [];
 		const existing = history.find((item) => item && item.filePath === file.path);
 		const state = this.syncState.getState(file.path);
+		const profileRecordId = getProfileRecordIdFromMarkdown(content);
 		const frontMatterRecordId = this.extractFrontMatterValue(content, 'recordId');
 		return existing && existing.bitableRecordId
 			? String(existing.bitableRecordId)
-			: (state && state.bitableRecordId ? String(state.bitableRecordId) : frontMatterRecordId);
+			: (state && state.bitableRecordId ? String(state.bitableRecordId) : (profileRecordId || frontMatterRecordId));
 	}
 
 	private hashBitableFields(fields: Record<string, any> | undefined | null): string {
@@ -842,6 +1234,10 @@ export default class FeishuPlugin extends Plugin {
 	}
 
 	private async smartSyncBitableFile(file: TFile, rawContent: string, options?: SyncExecutionOptions): Promise<boolean> {
+		const profile = this.getBitableProfileForFile(file, rawContent);
+		if (profile) {
+			return await this.smartSyncBitableProfileFile(file, rawContent, profile, options);
+		}
 		const interactive = options?.interactive !== false;
 		const silent = options?.silent === true;
 		const syncLabel = options?.source === 'scheduled' ? '定时同步' : '智能同步';
@@ -921,6 +1317,238 @@ export default class FeishuPlugin extends Plugin {
 		return true;
 	}
 
+	private async smartSyncBitableProfileFile(file: TFile, rawContent: string, profile: BitableSyncProfile, options?: SyncExecutionOptions): Promise<boolean> {
+		const interactive = options?.interactive !== false;
+		const silent = options?.silent === true;
+		const syncLabel = options?.source === 'scheduled' ? '定时同步' : '智能同步';
+		const recordId = this.getProfileRecordIdForFile(file, rawContent, profile);
+		if (!recordId) {
+			if (!silent) {
+				new Notice(`未找到 ${profile.name} 记录映射，正在创建多维表格记录`);
+			}
+			return !!(await this.syncFileToBitableProfile(file, file.basename, rawContent, profile, undefined, silent));
+		}
+		const record = await this.feishuApi.getBitableRecord(profile.appToken, profile.tableId, recordId);
+		if (!record.success || !record.fields) {
+			if (this.isBitableRecordMissingError(record.error)) {
+				await this.markProfileRemoteMissing(file, profile, recordId);
+				if (!silent) {
+					new Notice(`⚠️ ${profile.name} 远端记录已删除，本地文件已保留`);
+				}
+				return false;
+			}
+			throw new Error(record.error || `读取 ${profile.name} 记录失败`);
+		}
+		const finalRecordId = record.recordId || recordId;
+		const remoteHash = this.hashBitableProfileRemote(profile, finalRecordId, record.fields);
+		const managedContent = buildProfileManagedContent(rawContent, profile);
+		const evaluation = this.syncState.evaluateSync(file.path, managedContent, {
+			kind: 'bitable',
+			hash: remoteHash,
+			updatedAt: record.updatedAt
+		});
+		if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+			if (!interactive) {
+				await this.upsertProfileHistoryAndState({
+					file,
+					profile,
+					recordId: finalRecordId,
+					title: file.basename,
+					content: managedContent,
+					remoteHash,
+					remoteUpdatedAt: record.updatedAt,
+					status: 'conflict',
+					error: `${syncLabel}检测到 ${profile.name} 本地和远端都有改动，已跳过`
+				});
+				this.log(`${syncLabel} skipped ${profile.name} conflict for ${file.path}`, 'warn');
+				return false;
+			}
+			const choice = await this.chooseSmartSyncConflictAction(file.basename);
+			if (choice === 'pull') {
+				return await this.pullFileFromBitableProfile(file, profile, options);
+			}
+			if (choice === 'push') {
+				return !!(await this.syncFileToBitableProfile(file, file.basename, rawContent, profile, undefined, silent));
+			}
+			await this.upsertProfileHistoryAndState({
+				file,
+				profile,
+				recordId: finalRecordId,
+				title: file.basename,
+				content: managedContent,
+				remoteHash,
+				remoteUpdatedAt: record.updatedAt,
+				status: 'conflict',
+				error: `智能同步检测到 ${profile.name} 双向变更，用户取消`
+			});
+			if (!silent) {
+				new Notice(`已取消：${profile.name} 本地和远端都有改动`);
+			}
+			return false;
+		}
+		if (evaluation.hasRemoteChanges) {
+			return await this.pullFileFromBitableProfile(file, profile, options);
+		}
+		if (evaluation.hasLocalChanges || !evaluation.hasBaseline) {
+			return !!(await this.syncFileToBitableProfile(file, file.basename, rawContent, profile, undefined, silent));
+		}
+		await this.ensureProfileFilePath(file, profile, finalRecordId, record.fields);
+		if (!silent) {
+			new Notice(`✅ ${profile.name} 本地和远端已是最新`);
+		}
+		return true;
+	}
+
+	private async syncFileToBitableProfile(file: TFile, title: string, rawContent: string, profile: BitableSyncProfile, statusNotice?: Notice, silent: boolean = false): Promise<string | undefined> {
+		const now = Date.now();
+		const fieldMetaByName = await this.getBitableProfileFieldMeta(profile);
+		const fields = buildProfileBitableFieldsFromMarkdown(rawContent, profile, fieldMetaByName, now);
+		this.setProfileLogicalField(fields, profile, fieldMetaByName, 'title', title || file.basename, now);
+		const recordId = this.getProfileRecordIdForFile(file, rawContent, profile) || undefined;
+		statusNotice?.setMessage(`📊 正在同步 ${profile.name}...`);
+		const upsert = await this.feishuApi.upsertBitableRecord({
+			appToken: profile.appToken,
+			tableId: profile.tableId,
+			recordId,
+			fields
+		});
+		if (!upsert.success) {
+			throw new Error(upsert.error || `同步 ${profile.name} 失败`);
+		}
+		const finalRecordId = upsert.recordId || recordId;
+		if (!finalRecordId) {
+			throw new Error(`同步 ${profile.name} 后未返回 recordId`);
+		}
+		const bitableMeta = await this.feishuApi.getBitableRecord(profile.appToken, profile.tableId, finalRecordId);
+		if (!bitableMeta.success || !bitableMeta.fields) {
+			throw new Error(bitableMeta.error || `读取 ${profile.name} 同步后记录失败`);
+		}
+		const nextContent = applyProfileRecordToMarkdown(rawContent, profile, finalRecordId, bitableMeta.fields, now, fieldMetaByName);
+		if (nextContent !== rawContent) {
+			await this.app.vault.modify(file, nextContent);
+		}
+		const targetFile = await this.ensureProfileFilePath(file, profile, finalRecordId, bitableMeta.fields);
+		const remoteHash = this.hashBitableProfileRemote(profile, finalRecordId, bitableMeta.fields);
+		await this.upsertProfileHistoryAndState({
+			file: targetFile,
+			profile,
+			recordId: finalRecordId,
+			title: targetFile.basename,
+			content: buildProfileManagedContent(nextContent, profile),
+			remoteHash,
+			remoteUpdatedAt: bitableMeta.updatedAt
+		});
+		if (!silent && !this.settings.suppressShareNotices) {
+			new Notice(`✅ 已同步到 ${profile.name}`);
+		}
+		return finalRecordId;
+	}
+
+	private async syncBitableProfileFromRemote(profile: BitableSyncProfile, options?: SyncExecutionOptions): Promise<{ total: number; successCount: number; failedCount: number }> {
+		const result = await this.feishuApi.listBitableRecords({
+			appToken: profile.appToken,
+			tableId: profile.tableId,
+			viewId: profile.viewId
+		});
+		if (!result.success || !result.records) {
+			throw new Error(result.error || `读取 ${profile.name} 记录列表失败`);
+		}
+		let successCount = 0;
+		let failedCount = 0;
+		const fieldMetaByName = await this.getBitableProfileFieldMeta(profile);
+		const remoteRecordIds = new Set(result.records.map((record) => String(record.recordId || '').trim()).filter((recordId) => !!recordId));
+		for (const record of result.records) {
+			try {
+				const ok = await this.syncBitableProfileRecord(profile, record, fieldMetaByName, options);
+				if (ok) {
+					successCount++;
+				} else {
+					failedCount++;
+				}
+			} catch (error) {
+				failedCount++;
+				this.log(`Sync ${profile.name} record ${record.recordId} failed: ${this.getErrorMessage(error)}`, 'warn');
+			}
+		}
+		await this.markProfileRemoteMissingFromListing(profile, remoteRecordIds);
+		return { total: result.records.length, successCount, failedCount };
+	}
+
+	private async syncBitableProfileRecord(
+		profile: BitableSyncProfile,
+		record: { recordId: string; fields: Record<string, any>; updatedAt?: number },
+		fieldMetaByName: Map<string, any>,
+		options?: SyncExecutionOptions
+	): Promise<boolean> {
+		const silent = options?.silent === true;
+		const interactive = options?.interactive !== false;
+		const remoteHash = this.hashBitableProfileRemote(profile, record.recordId, record.fields);
+		let file = await this.findProfileFileByRecordId(profile, record.recordId);
+		if (!file) {
+			await this.ensureProfileTargetFolder(profile.targetDir);
+			const path = await this.buildProfileFilePath(profile, record.recordId, record.fields);
+			const createdContent = buildProfileMarkdownFromRecord(profile, record.recordId, record.fields, Date.now(), fieldMetaByName);
+			const createdFile = await this.app.vault.create(path, createdContent) as TFile;
+			await this.upsertProfileHistoryAndState({
+				file: createdFile,
+				profile,
+				recordId: record.recordId,
+				title: createdFile.basename,
+				content: buildProfileManagedContent(createdContent, profile),
+				remoteHash,
+				remoteUpdatedAt: record.updatedAt
+			});
+			return true;
+		}
+
+		const current = await this.app.vault.read(file);
+		const managedContent = buildProfileManagedContent(current, profile);
+		const evaluation = this.syncState.evaluateSync(file.path, managedContent, {
+			kind: 'bitable',
+			hash: remoteHash,
+			updatedAt: record.updatedAt
+		});
+		if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+			await this.upsertProfileHistoryAndState({
+				file,
+				profile,
+				recordId: record.recordId,
+				title: file.basename,
+				content: managedContent,
+				remoteHash,
+				remoteUpdatedAt: record.updatedAt,
+				status: 'conflict',
+				error: `Profile ${profile.name} 检测到本地受管内容和远端记录都有改动`
+			});
+			return false;
+		}
+		if (evaluation.hasLocalChanges && !evaluation.hasRemoteChanges) {
+			return !!(await this.syncFileToBitableProfile(file, file.basename, current, profile, undefined, silent));
+		}
+		if (evaluation.hasRemoteChanges || !evaluation.hasBaseline) {
+			if (!interactive) {
+				const nextContent = applyProfileRecordToMarkdown(current, profile, record.recordId, record.fields, Date.now(), fieldMetaByName);
+				if (nextContent !== current) {
+					await this.app.vault.modify(file, nextContent);
+				}
+				const targetFile = await this.ensureProfileFilePath(file, profile, record.recordId, record.fields);
+				await this.upsertProfileHistoryAndState({
+					file: targetFile,
+					profile,
+					recordId: record.recordId,
+					title: targetFile.basename,
+					content: buildProfileManagedContent(nextContent, profile),
+					remoteHash,
+					remoteUpdatedAt: record.updatedAt
+				});
+				return true;
+			}
+			return await this.pullFileFromBitableProfile(file, profile, options);
+		}
+		await this.ensureProfileFilePath(file, profile, record.recordId, record.fields);
+		return true;
+	}
+
 	private async syncBothTargetsFromLocal(file: TFile, options?: SyncExecutionOptions): Promise<boolean> {
 		const latestContent = await this.app.vault.read(file);
 		const feishuUrl = this.getFeishuUrlForFile(file, latestContent);
@@ -943,28 +1571,64 @@ export default class FeishuPlugin extends Plugin {
 			revision: remoteMeta?.revision,
 			updatedAt: remoteMeta?.updatedAt
 		});
+		const profile = this.getBitableProfileForFile(file, rawContent);
 
 		let bitableRemoteHash: string | undefined;
 		let bitableUpdatedAt: number | undefined;
-		const bitableRecordId = this.getBitableRecordIdForFile(file, rawContent);
-		if (bitableRecordId && (!this.settings.bitableAppToken || !this.settings.bitableTableId)) {
+		const bitableContent = profile ? buildProfileManagedContent(rawContent, profile) : rawContent;
+		const bitableRecordId = profile
+			? this.getProfileRecordIdForFile(file, rawContent, profile)
+			: this.getBitableRecordIdForFile(file, rawContent);
+		const bitableAppToken = profile ? profile.appToken : this.settings.bitableAppToken;
+		const bitableTableId = profile ? profile.tableId : this.settings.bitableTableId;
+		const bitableViewId = profile ? profile.viewId : undefined;
+		if (bitableRecordId && !profile && (!bitableAppToken || !bitableTableId)) {
 			throw new Error('两者都同步需要填写 Bitable App Token 和 Bitable Table ID，才能检查多维表格远端改动');
 		}
-		if (bitableRecordId) {
-			const appToken = this.settings.bitableAppToken as string;
-			const tableId = this.settings.bitableTableId as string;
-			const record = await this.feishuApi.getBitableRecord(appToken, tableId, bitableRecordId);
-			if (!record.success) {
-				throw new Error(record.error || '读取 Bitable 记录失败');
+		if (bitableRecordId && bitableAppToken && bitableTableId) {
+			const record = await this.feishuApi.getBitableRecord(bitableAppToken, bitableTableId, bitableRecordId);
+			if (!record.success || !record.fields) {
+				throw new Error(record.error || (profile ? `读取 ${profile.name} 记录失败` : '读取 Bitable 记录失败'));
 			}
-			bitableRemoteHash = this.hashBitableFields(record.fields);
+			const finalRecordId = record.recordId || bitableRecordId;
+			bitableRemoteHash = profile
+				? this.hashBitableProfileRemote(profile, finalRecordId, record.fields)
+				: this.hashBitableFields(record.fields);
 			bitableUpdatedAt = record.updatedAt;
 		}
-		const bitableEvaluation = this.syncState.evaluateSync(file.path, rawContent, {
+		const bitableEvaluation = this.syncState.evaluateSync(file.path, bitableContent, {
 			kind: 'bitable',
 			hash: bitableRemoteHash,
 			updatedAt: bitableUpdatedAt
 		});
+		const pullBitableTarget = async (): Promise<boolean> => profile
+			? await this.pullFileFromBitableProfile(file, profile, options)
+			: await this.pullFileFromBitable(file, options);
+		const recordBothConflict = async (direction: SyncDirection, error: string): Promise<void> => {
+			this.syncState.upsert({
+				filePath: file.path,
+				title: file.basename,
+				content: rawContent,
+				docToken: docToken || undefined,
+				url: feishuUrl || undefined,
+				bitableRecordId: bitableRecordId || undefined,
+				bitableProfileId: profile?.id,
+				bitableAppToken: bitableAppToken || undefined,
+				bitableTableId: bitableTableId || undefined,
+				bitableViewId,
+				direction,
+				status: 'conflict',
+				error,
+				remoteHash: bitableRemoteHash,
+				remoteRevision: remoteMeta?.revision,
+				remoteUpdatedAt: Math.max(remoteMeta?.updatedAt || 0, bitableUpdatedAt || 0) || undefined,
+				docRemoteRevision: remoteMeta?.revision,
+				docRemoteUpdatedAt: remoteMeta?.updatedAt,
+				bitableRemoteHash,
+				bitableRemoteUpdatedAt: bitableUpdatedAt
+			});
+			await this.saveSettings();
+		};
 		const plan = planSmartSyncBoth(
 			{
 				mapped: !!feishuUrl,
@@ -997,29 +1661,11 @@ export default class FeishuPlugin extends Plugin {
 			return (await this.updateFromFeishu(file, options)) && (await this.syncBothTargetsFromLocal(file, options));
 		}
 		if (plan.action === 'pull-bitable') {
-			return (await this.pullFileFromBitable(file, options)) && (await this.syncBothTargetsFromLocal(file, options));
+			return (await pullBitableTarget()) && (await this.syncBothTargetsFromLocal(file, options));
 		}
 		if (plan.action === 'choose-remote-source') {
 			if (!interactive) {
-				this.syncState.upsert({
-					filePath: file.path,
-					title: file.basename,
-					content: rawContent,
-					docToken: docToken || undefined,
-					url: feishuUrl || undefined,
-					bitableRecordId: bitableRecordId || undefined,
-					direction: 'obsidian-to-feishu',
-					status: 'conflict',
-					error: `${syncLabel}检测到飞书文档和多维表格都有远端改动，已跳过`,
-					remoteHash: bitableRemoteHash,
-					remoteRevision: remoteMeta?.revision,
-					remoteUpdatedAt: Math.max(remoteMeta?.updatedAt || 0, bitableUpdatedAt || 0) || undefined,
-					docRemoteRevision: remoteMeta?.revision,
-					docRemoteUpdatedAt: remoteMeta?.updatedAt,
-					bitableRemoteHash,
-					bitableRemoteUpdatedAt: bitableUpdatedAt
-				});
-				await this.saveSettings();
+				await recordBothConflict('obsidian-to-feishu', `${syncLabel}检测到飞书文档和多维表格都存在远端改动，已跳过`);
 				this.log(`${syncLabel} skipped dual-remote conflict for ${file.path}`, 'warn');
 				return false;
 			}
@@ -1028,77 +1674,29 @@ export default class FeishuPlugin extends Plugin {
 				return (await this.updateFromFeishu(file, options)) && (await this.syncBothTargetsFromLocal(file, options));
 			}
 			if (choice === 'bitable') {
-				return (await this.pullFileFromBitable(file, options)) && (await this.syncBothTargetsFromLocal(file, options));
+				return (await pullBitableTarget()) && (await this.syncBothTargetsFromLocal(file, options));
 			}
-			this.syncState.upsert({
-				filePath: file.path,
-				title: file.basename,
-				content: rawContent,
-				docToken: docToken || undefined,
-				url: feishuUrl || undefined,
-				bitableRecordId: bitableRecordId || undefined,
-				direction: 'obsidian-to-feishu',
-				status: 'conflict',
-				error: '智能同步检测到飞书文档和多维表格均有远端改动，用户取消',
-				remoteHash: bitableRemoteHash,
-				remoteRevision: remoteMeta?.revision,
-				remoteUpdatedAt: Math.max(remoteMeta?.updatedAt || 0, bitableUpdatedAt || 0) || undefined,
-				docRemoteRevision: remoteMeta?.revision,
-				docRemoteUpdatedAt: remoteMeta?.updatedAt,
-				bitableRemoteHash,
-				bitableRemoteUpdatedAt: bitableUpdatedAt
-			});
-			await this.saveSettings();
+			await recordBothConflict('obsidian-to-feishu', '智能同步检测到飞书文档和多维表格均有远端改动，用户取消');
 			if (!silent) {
-				new Notice('已取消：飞书文档和多维表格都有远端改动');
+				new Notice('已取消：飞书文档和多维表格都存在远端改动');
 			}
 			return false;
 		}
 		if (plan.action === 'choose-local-vs-feishu' || plan.action === 'choose-local-vs-bitable') {
 			if (!interactive) {
-				this.syncState.upsert({
-					filePath: file.path,
-					title: file.basename,
-					content: rawContent,
-					docToken: docToken || undefined,
-					url: feishuUrl || undefined,
-					bitableRecordId: bitableRecordId || undefined,
-					direction: plan.action === 'choose-local-vs-bitable' ? 'bitable' : 'obsidian-to-feishu',
-					status: 'conflict',
-					error: `${syncLabel}检测到 ${plan.reason}，已跳过`,
-					remoteHash: bitableRemoteHash,
-					remoteRevision: remoteMeta?.revision,
-					remoteUpdatedAt: Math.max(remoteMeta?.updatedAt || 0, bitableUpdatedAt || 0) || undefined,
-					docRemoteRevision: remoteMeta?.revision,
-					docRemoteUpdatedAt: remoteMeta?.updatedAt,
-					bitableRemoteHash,
-					bitableRemoteUpdatedAt: bitableUpdatedAt
-				});
-				await this.saveSettings();
+				await recordBothConflict(
+					plan.action === 'choose-local-vs-bitable' ? 'bitable' : 'obsidian-to-feishu',
+					`${syncLabel}检测到 ${plan.reason}，已跳过`
+				);
 				this.log(`${syncLabel} skipped local-vs-remote conflict for ${file.path}`, 'warn');
 				return false;
 			}
 			const choice = await this.chooseSmartSyncConflictAction(file.basename);
 			if (choice === 'cancel') {
-				this.syncState.upsert({
-					filePath: file.path,
-					title: file.basename,
-					content: rawContent,
-					docToken: docToken || undefined,
-					url: feishuUrl || undefined,
-					bitableRecordId: bitableRecordId || undefined,
-					direction: plan.action === 'choose-local-vs-bitable' ? 'bitable' : 'obsidian-to-feishu',
-					status: 'conflict',
-					error: `智能同步检测到 ${plan.reason}，用户取消`,
-					remoteHash: bitableRemoteHash,
-					remoteRevision: remoteMeta?.revision,
-					remoteUpdatedAt: Math.max(remoteMeta?.updatedAt || 0, bitableUpdatedAt || 0) || undefined,
-					docRemoteRevision: remoteMeta?.revision,
-					docRemoteUpdatedAt: remoteMeta?.updatedAt,
-					bitableRemoteHash,
-					bitableRemoteUpdatedAt: bitableUpdatedAt
-				});
-				await this.saveSettings();
+				await recordBothConflict(
+					plan.action === 'choose-local-vs-bitable' ? 'bitable' : 'obsidian-to-feishu',
+					`智能同步检测到 ${plan.reason}，用户取消`
+				);
 				if (!silent) {
 					new Notice(`已取消：${plan.reason}`);
 				}
@@ -1106,7 +1704,7 @@ export default class FeishuPlugin extends Plugin {
 			}
 			if (choice === 'pull') {
 				if (plan.action === 'choose-local-vs-bitable') {
-					if (!await this.pullFileFromBitable(file, options)) {
+					if (!await pullBitableTarget()) {
 						return false;
 					}
 				} else {
@@ -1971,6 +2569,13 @@ export default class FeishuPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const loadedData = await this.loadData();
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
+		this.settings.bitableProfiles = mergeDefaultBitableProfiles(this.settings.bitableProfiles);
+		if (!this.settings.activeBitableProfileId || !this.settings.bitableProfiles.some((profile) => profile.id === this.settings.activeBitableProfileId)) {
+			this.settings.activeBitableProfileId = this.settings.bitableProfiles[0]?.id || '';
+		}
+		if (!Array.isArray(this.settings.scheduledBitableProfileIds)) {
+			this.settings.scheduledBitableProfileIds = [DEFAULT_IOTO_TASK_PROFILE.id];
+		}
 	}
 
 	async saveSettings(): Promise<void> {
@@ -2413,6 +3018,12 @@ export default class FeishuPlugin extends Plugin {
 		const silent = options?.silent === true;
 		const statusNotice = (silent || this.settings.suppressShareNotices) ? undefined : new Notice('📊 正在从多维表格拉取...', 0);
 		try {
+			const profileContent = await this.app.vault.read(file);
+			const profile = this.getBitableProfileForFile(file, profileContent);
+			if (profile) {
+				statusNotice?.hide();
+				return await this.pullFileFromBitableProfile(file, profile, options);
+			}
 			if (!this.settings.bitableAppToken || !this.settings.bitableTableId) {
 				throw new Error('请先在设置中填写 Bitable App Token 和 Bitable Table ID');
 			}
@@ -2538,6 +3149,101 @@ export default class FeishuPlugin extends Plugin {
 		}
 	}
 
+	private async pullFileFromBitableProfile(file: TFile, profile: BitableSyncProfile, options?: SyncExecutionOptions): Promise<boolean> {
+		const interactive = options?.interactive !== false;
+		const silent = options?.silent === true;
+		const statusNotice = (silent || this.settings.suppressShareNotices) ? undefined : new Notice(`📊 正在从 ${profile.name} 拉取...`, 0);
+		try {
+			const current = await this.app.vault.read(file);
+			const recordId = this.getProfileRecordIdForFile(file, current, profile);
+			if (!recordId) {
+				throw new Error(`当前文件没有关联的 ${profile.name} recordId`);
+			}
+			const record = await this.feishuApi.getBitableRecord(profile.appToken, profile.tableId, recordId);
+			if (!record.success || !record.fields) {
+				if (this.isBitableRecordMissingError(record.error)) {
+					await this.markProfileRemoteMissing(file, profile, recordId);
+					statusNotice?.hide();
+					if (!silent) {
+						new Notice(`⚠️ ${profile.name} 远端记录已删除，本地文件已保留`);
+					}
+					return false;
+				}
+				throw new Error(record.error || `读取 ${profile.name} 记录失败`);
+			}
+			const finalRecordId = record.recordId || recordId;
+			const remoteHash = this.hashBitableProfileRemote(profile, finalRecordId, record.fields);
+			const fieldMetaByName = await this.getBitableProfileFieldMeta(profile);
+			const nextContent = applyProfileRecordToMarkdown(current, profile, finalRecordId, record.fields, Date.now(), fieldMetaByName);
+			const currentManaged = buildProfileManagedContent(current, profile);
+			const nextManaged = buildProfileManagedContent(nextContent, profile);
+			const localChange = this.syncState.getLocalChange(file.path, currentManaged);
+			if (localChange.hasLocalChanges && nextManaged !== currentManaged) {
+				if (!interactive) {
+					await this.upsertProfileHistoryAndState({
+						file,
+						profile,
+						recordId: finalRecordId,
+						title: file.basename,
+						content: currentManaged,
+						remoteHash,
+						remoteUpdatedAt: record.updatedAt,
+						status: 'conflict',
+						error: `定时同步检测到 ${profile.name} 本地受管内容存在未同步改动，已跳过远端覆盖`
+					});
+					this.log(`Scheduled sync skipped ${profile.name} overwrite for ${file.path}`, 'warn');
+					return false;
+				}
+				statusNotice?.hide();
+				const shouldOverwrite = await this.confirmOverwriteLocalChanges(file.basename, localChange.lastHash || '', localChange.currentHash, profile.name);
+				if (!shouldOverwrite) {
+					await this.upsertProfileHistoryAndState({
+						file,
+						profile,
+						recordId: finalRecordId,
+						title: file.basename,
+						content: currentManaged,
+						remoteHash,
+						remoteUpdatedAt: record.updatedAt,
+						status: 'conflict',
+						error: `用户取消从 ${profile.name} 覆盖本地受管内容`
+					});
+					return false;
+				}
+				statusNotice?.setMessage('📝 正在写入本地文件...');
+			}
+			const backupPath = nextContent !== current
+				? await this.backupBeforeRemoteOverwrite(file, current, profile.name)
+				: null;
+			if (nextContent !== current) {
+				await this.app.vault.modify(file, nextContent);
+			}
+			const targetFile = await this.ensureProfileFilePath(file, profile, finalRecordId, record.fields);
+			await this.upsertProfileHistoryAndState({
+				file: targetFile,
+				profile,
+				recordId: finalRecordId,
+				title: targetFile.basename,
+				content: nextManaged,
+				remoteHash,
+				remoteUpdatedAt: record.updatedAt
+			});
+			statusNotice?.hide();
+			if (!silent) {
+				new Notice(backupPath ? `✅ 已从 ${profile.name} 更新本地文件\n备份：${backupPath}` : `✅ 已从 ${profile.name} 更新本地文件`);
+			}
+			return true;
+		} catch (error) {
+			statusNotice?.hide();
+			if (!silent) {
+				this.handleError(error as Error, `从 ${profile.name} 更新`);
+			} else {
+				this.log(`Pull from ${profile.name} failed for ${file.path}: ${this.getErrorMessage(error)}`, 'warn');
+			}
+			return false;
+		}
+	}
+
 	private bitableFieldToPlainText(value: any): string {
 		return bitableFieldToPlainText(value);
 	}
@@ -2620,6 +3326,10 @@ export default class FeishuPlugin extends Plugin {
 	}
 
 	private async syncFileToBitable(file: TFile, title: string, rawContent: string, processResult: any, statusNotice?: Notice, silent: boolean = false): Promise<string | undefined> {
+		const profile = this.getBitableProfileForFile(file, rawContent);
+		if (profile) {
+			return await this.syncFileToBitableProfile(file, title, rawContent, profile, statusNotice, silent);
+		}
 		try {
 			if (!this.settings.bitableAppToken || !this.settings.bitableTableId) {
 				throw new Error('请先在设置中填写 Bitable App Token 和 Bitable Table ID');

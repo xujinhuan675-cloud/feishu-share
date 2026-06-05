@@ -7,6 +7,10 @@ type SyncStateUpdate = {
 	docToken?: string;
 	url?: string;
 	bitableRecordId?: string;
+	bitableProfileId?: string;
+	bitableAppToken?: string;
+	bitableTableId?: string;
+	bitableViewId?: string;
 	direction: SyncDirection;
 	status?: SyncStatus;
 	error?: string;
@@ -212,9 +216,13 @@ export class SyncStateService {
 	}
 
 	getLocalChange(filePath: string, content: string): LocalChangeInfo {
+		return this.getLocalChangeForKind(filePath, content);
+	}
+
+	private getLocalChangeForKind(filePath: string, content: string, kind?: RemoteChangeKind | null): LocalChangeInfo {
 		const state = this.getState(filePath);
 		const currentHash = this.hashContent(content);
-		const lastHash = state?.localHash;
+		const lastHash = this.getLastLocalHash(state, kind);
 		return {
 			hasBaseline: !!lastHash,
 			hasLocalChanges: !!lastHash && lastHash !== currentHash,
@@ -225,12 +233,12 @@ export class SyncStateService {
 	}
 
 	evaluateSync(filePath: string, content: string, remote?: RemoteChangeInput | null): SyncChangeEvaluation {
-		const local = this.getLocalChange(filePath, content);
+		const remoteKind = this.inferRemoteKind(remote);
+		const local = this.getLocalChangeForKind(filePath, content, remoteKind);
 		const state = local.state;
 		const remoteHash = remote?.hash;
 		const remoteRevision = remote?.revision;
 		const remoteUpdatedAt = remote?.updatedAt;
-		const remoteKind = this.inferRemoteKind(remote);
 		const lastRemoteHash = remoteHash ? (state?.bitableRemoteHash || state?.remoteHash) : undefined;
 		const lastRemoteRevision = remoteRevision ? (state?.docRemoteRevision || state?.remoteRevision) : undefined;
 		const lastRemoteUpdatedAt = this.getLastRemoteUpdatedAt(state, remoteKind);
@@ -272,6 +280,9 @@ export class SyncStateService {
 		const hasRemoteSnapshot = this.hasRemoteSnapshot(update);
 		const isDocDirection = update.direction === 'obsidian-to-feishu' || update.direction === 'feishu-to-obsidian';
 		const isBitableDirection = update.direction === 'bitable';
+		const contentHash = shouldAdvanceBaseline && update.content !== undefined
+			? this.hashContent(update.content)
+			: undefined;
 		const docRemoteRevision = update.docRemoteRevision || update.remoteRevision;
 		const docRemoteUpdatedAt = typeof update.docRemoteUpdatedAt === 'number'
 			? update.docRemoteUpdatedAt
@@ -290,7 +301,13 @@ export class SyncStateService {
 			docToken: update.docToken || existing?.docToken,
 			url: update.url || existing?.url,
 			bitableRecordId: update.bitableRecordId || existing?.bitableRecordId,
-			localHash: shouldAdvanceBaseline && update.content !== undefined ? this.hashContent(update.content) : existing?.localHash,
+			bitableProfileId: update.bitableProfileId || existing?.bitableProfileId,
+			bitableAppToken: update.bitableAppToken || existing?.bitableAppToken,
+			bitableTableId: update.bitableTableId || existing?.bitableTableId,
+			bitableViewId: update.bitableViewId || existing?.bitableViewId,
+			localHash: contentHash || existing?.localHash,
+			docLocalHash: isDocDirection && contentHash ? contentHash : existing?.docLocalHash,
+			bitableLocalHash: isBitableDirection && contentHash ? contentHash : existing?.bitableLocalHash,
 			lastDirection: update.direction,
 			status,
 			lastSyncedAt: now,
@@ -349,6 +366,19 @@ export class SyncStateService {
 		return null;
 	}
 
+	private getLastLocalHash(state: SyncStateItem | null, kind?: RemoteChangeKind | null): string | undefined {
+		if (!state) {
+			return undefined;
+		}
+		if (kind === 'doc') {
+			return state.docLocalHash || state.localHash;
+		}
+		if (kind === 'bitable') {
+			return state.bitableLocalHash || state.localHash;
+		}
+		return state.localHash;
+	}
+
 	private getLastRemoteUpdatedAt(state: SyncStateItem | null, remoteKind: RemoteChangeKind | null): number | undefined {
 		if (remoteKind === 'bitable') {
 			return state?.bitableRemoteUpdatedAt ?? state?.remoteUpdatedAt;
@@ -386,6 +416,10 @@ export class SyncStateService {
 			docToken: hit.docToken,
 			url: hit.url,
 			bitableRecordId: hit.bitableRecordId,
+			bitableProfileId: hit.bitableProfileId,
+			bitableAppToken: hit.bitableAppToken,
+			bitableTableId: hit.bitableTableId,
+			bitableViewId: hit.bitableViewId,
 			lastSyncedAt: hit.updatedAt
 		};
 	}
