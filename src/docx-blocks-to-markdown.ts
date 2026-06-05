@@ -272,7 +272,7 @@ export class DocxBlocksToMarkdown {
 		const isMermaidLike = (s: string): boolean => {
 			const t = String(s || '').trim();
 			if (!t) return false;
-			return /^(flowchart|sequenceDiagram|classDiagram|erDiagram|stateDiagram|gantt|pie)\b/.test(t);
+			return /^(flowchart|sequenceDiagram|classDiagram|erDiagram|stateDiagram(?:-v2)?|gantt|pie|mindmap|journey|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment)\b/.test(t);
 		};
 
 		const render = (blockId: string, indent: number, inQuote: boolean = false, inContainer: boolean = false): string => {

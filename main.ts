@@ -63,6 +63,11 @@ export default class FeishuPlugin extends Plugin {
 		// 添加设置页面
 		this.addSettingTab(new FeishuSettingTab(this.app, this));
 
+		// 添加功能区图标，直接触发当前笔记的智能双向同步
+		this.addRibbonIcon('refresh-cw', '智能双向同步当前笔记', () => {
+			this.smartSyncCurrentNote();
+		});
+
 		// 注册命令和菜单
 		this.registerCommands();
 		this.registerMenus();

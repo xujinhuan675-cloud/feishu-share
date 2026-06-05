@@ -52,3 +52,29 @@ test('docx rich text keeps underline, color, and equation when converting to mar
 	assert.ok(markdown.includes('<span style="color:blue">blue</span>'));
 	assert.ok(markdown.includes('$x^2+y^2=z^2$'));
 });
+
+test('docx mermaid widget keeps mindmap syntax instead of degrading', () => {
+	const markdown = DocxBlocksToMarkdown.convert([
+		{
+			block_id: 'root',
+			block_type: 1,
+			children: ['widget-1']
+		},
+		{
+			block_id: 'widget-1',
+			block_type: 40,
+			parent_id: 'root',
+			children: [],
+			add_ons: {
+				component_type_id: 'blk_631fefbbae02400430b8f9f4',
+				record: JSON.stringify({
+					data: 'mindmap\n  root((Sync))\n    Mermaid'
+				})
+			}
+		}
+	]);
+
+	assert.ok(markdown.includes('```mermaid'));
+	assert.ok(markdown.includes('mindmap'));
+	assert.ok(!markdown.includes('[Widget:'));
+});

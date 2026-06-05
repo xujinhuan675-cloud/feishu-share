@@ -45,8 +45,8 @@ export interface BitableFieldMeta {
 	uiType?: string;
 }
 
-export type GeneratedLocalFileType = 'mermaid' | 'whiteboard' | 'table';
-export type InlineDocTokenKind = 'text' | 'equation';
+export type GeneratedLocalFileType = 'mermaid' | 'whiteboard' | 'table' | 'todo' | 'list';
+export type InlineDocTokenKind = 'text' | 'equation' | 'todo';
 
 export interface ScheduledSyncReport {
 	lastRunAt?: number;
@@ -355,6 +355,7 @@ export interface InlineDocTokenInfo {
 	kind: InlineDocTokenKind;
 	content: string;
 	displayMode?: 'inline' | 'block';
+	todoState?: 'checked' | 'unchecked';
 	style?: {
 		bold?: boolean;
 		italic?: boolean;
@@ -467,4 +468,5 @@ export interface PlaceholderBlock {
 	placeholder: string;
 	fileInfo?: LocalFileInfo;     // 文件信息（可选，用于文件/图片）
 	calloutInfo?: CalloutInfo;    // Callout 信息（可选，用于 Callout 块）
+	blockType?: number;
 }

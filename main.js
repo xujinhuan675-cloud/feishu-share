@@ -326,6 +326,11 @@ function buildGeneratedDocBlock(fileInfo) {
         kind: "block",
         block: buildMermaidBlock(fileInfo.generatedSource || "")
       };
+    case "todo":
+      return {
+        kind: "block",
+        block: buildTodoBlock(fileInfo.generatedSource || "", fileInfo.generatedMeta)
+      };
     case "whiteboard":
       return {
         kind: "block",
@@ -335,6 +340,11 @@ function buildGeneratedDocBlock(fileInfo) {
       return {
         kind: "structure",
         structure: buildTableStructure(fileInfo.generatedMeta)
+      };
+    case "list":
+      return {
+        kind: "structure",
+        structure: buildListStructure(fileInfo.generatedMeta)
       };
     default:
       return null;
@@ -349,6 +359,20 @@ function buildMermaidBlock(code) {
       record: JSON.stringify({
         data: normalizeMultilineSource(code)
       })
+    }
+  };
+}
+function buildTodoBlock(content, meta) {
+  return {
+    block_type: 17,
+    todo: {
+      checked: !!(meta == null ? void 0 : meta.checked),
+      style: {
+        align: 1,
+        done: !!(meta == null ? void 0 : meta.checked),
+        folded: false
+      },
+      elements: buildRichTextElements(String(content || "").trim())
     }
   };
 }
@@ -367,21 +391,11 @@ function buildTableStructure(meta) {
   const tableId = createGeneratedBlockId("table");
   const descendants = [];
   const cellIds = [];
-  const mergeInfo = new Array(table.rowSize * table.columnSize).fill({});
   for (let row = 0; row < table.rowSize; row++) {
     for (let col = 0; col < table.columnSize; col++) {
       const cellId = `${tableId}_cell_${row}_${col}`;
       const childId = `${cellId}_text`;
       const cell = (_a = table.rows[row]) == null ? void 0 : _a[col];
-      const rowSpan = clampPositiveInt(cell == null ? void 0 : cell.rowSpan, 1);
-      const colSpan = clampPositiveInt(cell == null ? void 0 : cell.colSpan, 1);
-      const mergeIndex = row * table.columnSize + col;
-      if (rowSpan > 1 || colSpan > 1) {
-        mergeInfo[mergeIndex] = {
-          row_span: rowSpan,
-          col_span: colSpan
-        };
-      }
       cellIds.push(cellId);
       descendants.push({
         block_id: cellId,
@@ -393,11 +407,7 @@ function buildTableStructure(meta) {
         block_id: childId,
         block_type: 2,
         text: {
-          elements: [{
-            text_run: {
-              content: normalizeTableCellText((cell == null ? void 0 : cell.content) || "")
-            }
-          }]
+          elements: buildRichTextElements((cell == null ? void 0 : cell.content) || "")
         },
         children: []
       });
@@ -409,14 +419,59 @@ function buildTableStructure(meta) {
     table: {
       property: {
         row_size: table.rowSize,
-        column_size: table.columnSize,
-        merge_info: mergeInfo
+        column_size: table.columnSize
       }
     },
     children: cellIds
   });
   return {
     children_id: [tableId],
+    descendants
+  };
+}
+function collectTableMergeRanges(meta) {
+  var _a;
+  const table = normalizeTableMeta(meta);
+  const ranges = [];
+  for (let row = 0; row < table.rowSize; row++) {
+    for (let col = 0; col < table.columnSize; col++) {
+      const cell = (_a = table.rows[row]) == null ? void 0 : _a[col];
+      const rowSpan = clampPositiveInt(cell == null ? void 0 : cell.rowSpan, 1);
+      const colSpan = clampPositiveInt(cell == null ? void 0 : cell.colSpan, 1);
+      if (rowSpan > 1 || colSpan > 1) {
+        ranges.push({
+          row_start_index: row,
+          row_end_index: row + rowSpan,
+          column_start_index: col,
+          column_end_index: col + colSpan
+        });
+      }
+    }
+  }
+  return ranges;
+}
+function buildListStructure(meta) {
+  const nodes = Array.isArray(meta == null ? void 0 : meta.nodes) ? meta.nodes : [];
+  const descendants = [];
+  const children_id = [];
+  const quoteText = typeof (meta == null ? void 0 : meta.quoteText) === "string" ? meta.quoteText : "";
+  if ((meta == null ? void 0 : meta.kind) === "quote") {
+    const quoteId = createGeneratedBlockId("quote");
+    const childIds = buildStructuredNodes(nodes, descendants);
+    descendants.unshift({
+      block_id: quoteId,
+      block_type: 15,
+      quote: {
+        elements: buildRichTextElements(quoteText)
+      },
+      children: childIds
+    });
+    children_id.push(quoteId);
+  } else {
+    children_id.push(...buildStructuredNodes(nodes, descendants));
+  }
+  return {
+    children_id,
     descendants
   };
 }
@@ -431,6 +486,7 @@ function extractGeneratedDocBlocks(content, createPlaceholder) {
   };
   nextContent = extractMermaidBlocks(nextContent, createPlaceholder, pushGeneratedFile);
   nextContent = extractWhiteboardBlocks(nextContent, createPlaceholder, pushGeneratedFile);
+  nextContent = extractMarkdownTables(nextContent, createPlaceholder, pushGeneratedFile);
   nextContent = extractHtmlTables(nextContent, createPlaceholder, pushGeneratedFile);
   localFiles.sort((a, b) => {
     var _a, _b, _c, _d;
@@ -443,6 +499,92 @@ function extractGeneratedDocBlocks(content, createPlaceholder) {
   });
   return {
     content: nextContent,
+    localFiles
+  };
+}
+function extractGeneratedListStructures(content, createPlaceholder) {
+  const lines = String(content || "").split("\n");
+  const output = [];
+  const localFiles = [];
+  let index = 0;
+  let sourceOffset = 0;
+  let inFence = false;
+  let fenceMarker = "";
+  while (index < lines.length) {
+    const line = String(lines[index] || "");
+    const trimmed = line.trim();
+    const fenceMatch = line.match(/^\s*(```+|~~~+)/);
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0];
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker;
+      } else if (fenceMarker === marker) {
+        inFence = false;
+        fenceMarker = "";
+      }
+      output.push(line);
+      sourceOffset += line.length + 1;
+      index += 1;
+      continue;
+    }
+    if (inFence) {
+      output.push(line);
+      sourceOffset += line.length + 1;
+      index += 1;
+      continue;
+    }
+    const lineOffset = sourceOffset;
+    const quoteSection = tryParseQuoteSection(lines, index);
+    if (quoteSection) {
+      const placeholder = createPlaceholder();
+      localFiles.push({
+        originalPath: `generated://list/${placeholder}`,
+        fileName: "quote-list.md",
+        placeholder,
+        isImage: false,
+        generatedType: "list",
+        generatedSource: quoteSection.source,
+        generatedMeta: {
+          ...quoteSection.meta,
+          sourceIndex: lineOffset
+        }
+      });
+      output.push(placeholder);
+      for (let consumed = 0; consumed < quoteSection.lineCount; consumed++) {
+        sourceOffset += lines[index + consumed].length + 1;
+      }
+      index += quoteSection.lineCount;
+      continue;
+    }
+    const listSection = tryParseListSection(lines, index);
+    if (listSection) {
+      const placeholder = createPlaceholder();
+      localFiles.push({
+        originalPath: `generated://list/${placeholder}`,
+        fileName: "list.md",
+        placeholder,
+        isImage: false,
+        generatedType: "list",
+        generatedSource: listSection.source,
+        generatedMeta: {
+          ...listSection.meta,
+          sourceIndex: lineOffset
+        }
+      });
+      output.push(placeholder);
+      for (let consumed = 0; consumed < listSection.lineCount; consumed++) {
+        sourceOffset += lines[index + consumed].length + 1;
+      }
+      index += listSection.lineCount;
+      continue;
+    }
+    output.push(line);
+    sourceOffset += line.length + 1;
+    index += 1;
+  }
+  return {
+    content: output.join("\n"),
     localFiles
   };
 }
@@ -511,6 +653,42 @@ function extractHtmlTables(content, createPlaceholder, pushGeneratedFile) {
     return `${leading || ""}${indent || ""}${placeholder}`;
   });
 }
+function extractMarkdownTables(content, createPlaceholder, pushGeneratedFile) {
+  const lines = String(content || "").split("\n");
+  const output = [];
+  let index = 0;
+  let sourceOffset = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    const lineOffset = sourceOffset;
+    const parsed = tryParseMarkdownTableAt(lines, index);
+    if (!parsed) {
+      output.push(line);
+      sourceOffset += line.length + 1;
+      index += 1;
+      continue;
+    }
+    const placeholder = createPlaceholder();
+    pushGeneratedFile({
+      originalPath: `generated://table/${placeholder}`,
+      fileName: "table.md",
+      placeholder,
+      isImage: false,
+      generatedType: "table",
+      generatedSource: parsed.source,
+      generatedMeta: {
+        ...parsed.meta,
+        sourceIndex: lineOffset
+      }
+    });
+    output.push(placeholder);
+    for (let consumed = 0; consumed < parsed.lineCount; consumed++) {
+      sourceOffset += lines[index + consumed].length + 1;
+    }
+    index += parsed.lineCount;
+  }
+  return output.join("\n");
+}
 function stripFenceIndent(body, indent) {
   const normalized = normalizeMultilineSource(body);
   if (!indent) {
@@ -568,7 +746,7 @@ function normalizeTableMeta(meta) {
 }
 function normalizeTableCellText(value) {
   return decodeHtmlEntities(
-    String(value || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/?(?:p|div|span|strong|em|code|u|mark|thead|tbody)>/gi, "").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim()
+    String(value || "").replace(/<br\s*\/?>/gi, "\n").replace(/<strong\b[^>]*>([\s\S]*?)<\/strong>/gi, "**$1**").replace(/<b\b[^>]*>([\s\S]*?)<\/b>/gi, "**$1**").replace(/<em\b[^>]*>([\s\S]*?)<\/em>/gi, "*$1*").replace(/<i\b[^>]*>([\s\S]*?)<\/i>/gi, "*$1*").replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, "`$1`").replace(/<u\b[^>]*>([\s\S]*?)<\/u>/gi, "<u>$1</u>").replace(/<mark\b[^>]*>([\s\S]*?)<\/mark>/gi, "==$1==").replace(/<span\s+style=["'][^"']*color\s*:\s*(gray|brown|orange|yellow|green|blue|purple)[^"']*["']\s*>([\s\S]*?)<\/span>/gi, (_m, color, inner) => `<span style="color:${String(color).toLowerCase()}">${inner}</span>`).replace(/<\/?(?:p|div|strong|b|em|i|code|u|mark|thead|tbody|tr|td|th)\b[^>]*>/gi, "").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim()
   );
 }
 function parseHtmlTable(html) {
@@ -580,18 +758,49 @@ function parseHtmlTable(html) {
   if (rowMatches.length === 0) {
     return null;
   }
+  const pendingRowSpans = [];
   const rows = rowMatches.map((match) => {
     const rowHtml = String(match[1] || "");
     const cellMatches = Array.from(rowHtml.matchAll(/<td([^>]*)>([\s\S]*?)<\/td>/gi));
-    return cellMatches.map((cellMatch) => {
+    const row = [];
+    let colIndex = 0;
+    const consumePendingSpans = () => {
+      while ((pendingRowSpans[colIndex] || 0) > 0) {
+        row[colIndex] = {
+          content: ""
+        };
+        pendingRowSpans[colIndex] -= 1;
+        colIndex += 1;
+      }
+    };
+    for (const cellMatch of cellMatches) {
+      consumePendingSpans();
       const attrs = String(cellMatch[1] || "");
       const content = String(cellMatch[2] || "");
-      return {
+      const rowSpan = extractSpan(attrs, "rowspan");
+      const colSpan = extractSpan(attrs, "colspan");
+      row[colIndex] = {
         content: normalizeTableCellText(content),
-        rowSpan: extractSpan(attrs, "rowspan"),
-        colSpan: extractSpan(attrs, "colspan")
+        rowSpan,
+        colSpan
       };
-    });
+      for (let spanOffset = 1; spanOffset < colSpan; spanOffset++) {
+        row[colIndex + spanOffset] = {
+          content: ""
+        };
+      }
+      if (rowSpan > 1) {
+        for (let spanOffset = 0; spanOffset < colSpan; spanOffset++) {
+          pendingRowSpans[colIndex + spanOffset] = Math.max(
+            pendingRowSpans[colIndex + spanOffset] || 0,
+            rowSpan - 1
+          );
+        }
+      }
+      colIndex += colSpan;
+    }
+    consumePendingSpans();
+    return row;
   });
   const columnSize = rows.reduce((max, row) => Math.max(max, row.length), 0);
   if (columnSize === 0) {
@@ -602,6 +811,103 @@ function parseHtmlTable(html) {
     columnSize,
     rows
   };
+}
+function tryParseMarkdownTableAt(lines, startIndex) {
+  const headerLine = String(lines[startIndex] || "");
+  const delimiterLine = String(lines[startIndex + 1] || "");
+  if (!isMarkdownTableRow(headerLine) || !isMarkdownTableDelimiter(delimiterLine)) {
+    return null;
+  }
+  const collected = [headerLine, delimiterLine];
+  let cursor = startIndex + 2;
+  while (cursor < lines.length && isMarkdownTableRow(String(lines[cursor] || ""))) {
+    collected.push(String(lines[cursor] || ""));
+    cursor += 1;
+  }
+  const rows = collected.map((rowLine) => splitMarkdownTableRow(rowLine));
+  if (rows.length < 2) {
+    return null;
+  }
+  const header = rows[0];
+  const body = rows.slice(2);
+  const columnSize = header.length;
+  if (columnSize === 0) {
+    return null;
+  }
+  const normalizedRows = [header, ...body].map((row) => {
+    const normalizedRow = [];
+    for (let col = 0; col < columnSize; col++) {
+      normalizedRow.push({
+        content: normalizeMarkdownTableCellText(row[col] || "")
+      });
+    }
+    return normalizedRow;
+  });
+  return {
+    lineCount: collected.length,
+    source: collected.join("\n"),
+    meta: {
+      rowSize: normalizedRows.length,
+      columnSize,
+      rows: normalizedRows
+    }
+  };
+}
+function isMarkdownTableRow(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed || /^>/.test(trimmed)) {
+    return false;
+  }
+  return /\|/.test(trimmed);
+}
+function isMarkdownTableDelimiter(line) {
+  const cells = splitMarkdownTableRow(line);
+  if (cells.length === 0) {
+    return false;
+  }
+  return cells.every((cell) => /^:?-{2,}:?$/.test(cell.trim()));
+}
+function splitMarkdownTableRow(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.includes("|")) {
+    return [];
+  }
+  let body = trimmed;
+  if (body.startsWith("|")) {
+    body = body.slice(1);
+  }
+  if (body.endsWith("|")) {
+    body = body.slice(0, -1);
+  }
+  const cells = [];
+  let current = "";
+  let escaped = false;
+  for (let index = 0; index < body.length; index++) {
+    const char = body[index];
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      current += char;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+function normalizeMarkdownTableCellText(value) {
+  return normalizeTableCellText(
+    String(value || "").replace(/\\\|/g, "|").replace(/\r\n?/g, "\n")
+  );
 }
 function extractSpan(attrs, name) {
   const match = String(attrs || "").match(new RegExp(`${name}\\s*=\\s*["']?(\\d+)["']?`, "i"));
@@ -619,6 +925,366 @@ function createGeneratedBlockId(prefix) {
 }
 function decodeHtmlEntities(text) {
   return String(text || "").replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;/gi, "'");
+}
+function buildStructuredNodes(nodes, descendants) {
+  const childIds = [];
+  for (const node of nodes) {
+    const insertIndex = descendants.length;
+    const blockId = createGeneratedBlockId((node == null ? void 0 : node.kind) || "node");
+    const children = buildStructuredNodes(Array.isArray(node == null ? void 0 : node.children) ? node.children : [], descendants);
+    const block = buildStructuredNodeBlock(blockId, node, children);
+    if (!block) {
+      continue;
+    }
+    descendants.splice(insertIndex, 0, block);
+    childIds.push(blockId);
+  }
+  return childIds;
+}
+function buildStructuredNodeBlock(blockId, node, children) {
+  const text = typeof (node == null ? void 0 : node.text) === "string" ? node.text : "";
+  switch (node == null ? void 0 : node.kind) {
+    case "paragraph":
+      return {
+        block_id: blockId,
+        block_type: 2,
+        text: {
+          elements: buildRichTextElements(text)
+        },
+        children
+      };
+    case "bullet":
+      return {
+        block_id: blockId,
+        block_type: 12,
+        bullet: {
+          elements: buildRichTextElements(text),
+          style: {
+            align: 1,
+            folded: false
+          }
+        },
+        children
+      };
+    case "ordered":
+      return {
+        block_id: blockId,
+        block_type: 13,
+        ordered: {
+          elements: buildRichTextElements(text),
+          style: {
+            align: 1,
+            folded: false,
+            sequence: String((node == null ? void 0 : node.sequence) || 1)
+          }
+        },
+        children
+      };
+    case "todo":
+      return {
+        block_id: blockId,
+        block_type: 17,
+        todo: {
+          checked: !!(node == null ? void 0 : node.checked),
+          style: {
+            align: 1,
+            done: !!(node == null ? void 0 : node.checked),
+            folded: false
+          },
+          elements: buildRichTextElements(text)
+        },
+        children
+      };
+    default:
+      return null;
+  }
+}
+function buildRichTextElements(markdown) {
+  const elements = [];
+  const text = String(markdown || "");
+  const colorMap = {
+    gray: 1,
+    brown: 2,
+    orange: 3,
+    yellow: 4,
+    green: 5,
+    blue: 6,
+    purple: 7
+  };
+  const tokenRegex = /<u>([\s\S]*?)<\/u>|<mark>([\s\S]*?)<\/mark>|<span\s+style=["'][^"']*color\s*:\s*(gray|brown|orange|yellow|green|blue|purple)[^"']*["']\s*>([\s\S]*?)<\/span>|==([\s\S]+?)==|\*\*([\s\S]+?)\*\*|(?<!\*)\*([^*\n]+?)\*(?!\*)|`([^`\n]+?)`|~~([\s\S]+?)~~|(?<!\$)\$([^\n$]+?)\$(?!\$)/gi;
+  let lastIndex = 0;
+  let match;
+  while ((match = tokenRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      elements.push({
+        text_run: {
+          content: text.slice(lastIndex, match.index)
+        }
+      });
+    }
+    if (match[1] !== void 0) {
+      elements.push({ text_run: { content: match[1], text_element_style: { underline: true } } });
+    } else if (match[2] !== void 0) {
+      elements.push({ text_run: { content: match[2], text_element_style: { background_color: 3 } } });
+    } else if (match[4] !== void 0) {
+      elements.push({
+        text_run: {
+          content: match[4],
+          text_element_style: { text_color: colorMap[String(match[3] || "").toLowerCase()] || 0 }
+        }
+      });
+    } else if (match[5] !== void 0) {
+      elements.push({ text_run: { content: match[5], text_element_style: { background_color: 3 } } });
+    } else if (match[6] !== void 0) {
+      elements.push({ text_run: { content: match[6], text_element_style: { bold: true } } });
+    } else if (match[7] !== void 0) {
+      elements.push({ text_run: { content: match[7], text_element_style: { italic: true } } });
+    } else if (match[8] !== void 0) {
+      elements.push({ text_run: { content: match[8], text_element_style: { inline_code: true } } });
+    } else if (match[9] !== void 0) {
+      elements.push({ text_run: { content: match[9], text_element_style: { strikethrough: true } } });
+    } else if (match[10] !== void 0) {
+      elements.push({ equation: { content: normalizeEquationContent(match[10]) } });
+    }
+    lastIndex = tokenRegex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    elements.push({
+      text_run: {
+        content: text.slice(lastIndex)
+      }
+    });
+  }
+  const filtered = elements.filter((element) => {
+    if (element == null ? void 0 : element.text_run) {
+      return typeof element.text_run.content === "string" && element.text_run.content.length > 0;
+    }
+    if (element == null ? void 0 : element.equation) {
+      return typeof element.equation.content === "string" && element.equation.content.length > 0;
+    }
+    return false;
+  });
+  return filtered.length > 0 ? filtered : [{ text_run: { content: "" } }];
+}
+function normalizeEquationContent(formula) {
+  return String(formula || "").replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "").replace(/\\\\(?=[A-Za-z])/g, "\\").replace(/\\\\,/g, "\\,");
+}
+function tryParseQuoteSection(lines, startIndex) {
+  const firstLine = String(lines[startIndex] || "");
+  if (!isQuoteLine(firstLine) || isCalloutQuoteLine(firstLine)) {
+    return null;
+  }
+  const collected = [];
+  let cursor = startIndex;
+  while (cursor < lines.length) {
+    const line = String(lines[cursor] || "");
+    if (line.trim() === "") {
+      if (cursor + 1 < lines.length && isQuoteLine(String(lines[cursor + 1] || ""))) {
+        collected.push(line);
+        cursor += 1;
+        continue;
+      }
+      break;
+    }
+    if (!isQuoteLine(line) || isCalloutQuoteLine(line)) {
+      break;
+    }
+    collected.push(line);
+    cursor += 1;
+  }
+  if (collected.length === 0) {
+    return null;
+  }
+  const strippedLines = collected.map(stripSingleQuotePrefix);
+  const parsed = parseStructuredNodes(strippedLines, true);
+  if (!parsed) {
+    return null;
+  }
+  return {
+    lineCount: collected.length,
+    source: collected.join("\n"),
+    meta: parsed
+  };
+}
+function tryParseListSection(lines, startIndex) {
+  const firstLine = String(lines[startIndex] || "");
+  if (!isListLine(firstLine)) {
+    return null;
+  }
+  const collected = [];
+  let cursor = startIndex;
+  while (cursor < lines.length) {
+    const line = String(lines[cursor] || "");
+    if (line.trim() === "") {
+      if (cursor + 1 < lines.length) {
+        const nextLine = String(lines[cursor + 1] || "");
+        if (isListLine(nextLine) || isIndentedContinuationLine(nextLine)) {
+          collected.push(line);
+          cursor += 1;
+          continue;
+        }
+      }
+      break;
+    }
+    if (!isListLine(line) && !isIndentedContinuationLine(line)) {
+      break;
+    }
+    collected.push(line);
+    cursor += 1;
+  }
+  if (collected.length === 0) {
+    return null;
+  }
+  const parsed = parseStructuredNodes(collected, false);
+  if (!parsed || parsed.kind !== "list" || !Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
+    return null;
+  }
+  return {
+    lineCount: collected.length,
+    source: collected.join("\n"),
+    meta: parsed
+  };
+}
+function parseStructuredNodes(lines, allowParagraphs) {
+  const root = { indent: -1, children: [] };
+  const stack = [root];
+  let lastNode = null;
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").replace(/\r/g, "");
+    if (line.trim() === "") {
+      if ((lastNode == null ? void 0 : lastNode.kind) === "paragraph" && !lastNode.text.endsWith("\n")) {
+        lastNode.text += "\n";
+      }
+      continue;
+    }
+    const listMatch = parseListLine(line);
+    if (listMatch) {
+      while (stack.length > 1 && listMatch.indent <= stack[stack.length - 1].indent) {
+        stack.pop();
+      }
+      const node = {
+        kind: listMatch.kind,
+        text: listMatch.text,
+        checked: listMatch.checked,
+        sequence: listMatch.sequence,
+        indent: listMatch.indent,
+        children: []
+      };
+      stack[stack.length - 1].children.push(node);
+      stack.push(node);
+      lastNode = node;
+      continue;
+    }
+    const rawIndent = countLeadingSpaces(line);
+    const text = line.trim();
+    const parent = findContinuationParent(stack, rawIndent, allowParagraphs);
+    if (!parent) {
+      continue;
+    }
+    const previousChild = parent.children[parent.children.length - 1];
+    if ((previousChild == null ? void 0 : previousChild.kind) === "paragraph") {
+      previousChild.text = `${String(previousChild.text || "").replace(/\n$/, "")}
+${text}`;
+      lastNode = previousChild;
+      continue;
+    }
+    const paragraphNode = {
+      kind: "paragraph",
+      text,
+      indent: rawIndent,
+      children: []
+    };
+    parent.children.push(paragraphNode);
+    lastNode = paragraphNode;
+  }
+  if (allowParagraphs) {
+    const nodes = root.children.slice();
+    if (nodes.length === 0) {
+      return null;
+    }
+    const firstNode = nodes[0];
+    if (firstNode.kind === "paragraph") {
+      return {
+        kind: "quote",
+        quoteText: firstNode.text,
+        nodes: nodes.slice(1)
+      };
+    }
+    return {
+      kind: "quote",
+      quoteText: "",
+      nodes
+    };
+  }
+  return root.children.length > 0 ? {
+    kind: "list",
+    nodes: root.children
+  } : null;
+}
+function findContinuationParent(stack, rawIndent, allowParagraphs) {
+  for (let index = stack.length - 1; index >= 1; index--) {
+    if (rawIndent > stack[index].indent) {
+      return stack[index];
+    }
+  }
+  return allowParagraphs ? stack[0] : stack[stack.length - 1] || null;
+}
+function parseListLine(line) {
+  const match = String(line || "").match(/^([ \t]*)([-*+]|\d+\.)\s(?:\[( |x|X)\]\s+)?(.+)$/);
+  if (!match) {
+    return null;
+  }
+  const indent = countLeadingSpaces(match[1] || "");
+  const marker = String(match[2] || "");
+  const todoState = match[3];
+  const text = String(match[4] || "").trim();
+  if (todoState !== void 0) {
+    return {
+      indent,
+      kind: "todo",
+      text,
+      checked: String(todoState || "").toLowerCase() === "x"
+    };
+  }
+  if (/^\d+\.$/.test(marker)) {
+    return {
+      indent,
+      kind: "ordered",
+      text,
+      sequence: Number(marker.slice(0, -1)) || 1
+    };
+  }
+  return {
+    indent,
+    kind: "bullet",
+    text
+  };
+}
+function isListLine(line) {
+  return /^([ \t]*)([-*+]|\d+\.)\s(?:\[(?: |x|X)\]\s+)?\S/.test(String(line || ""));
+}
+function isIndentedContinuationLine(line) {
+  const text = String(line || "");
+  if (!text.trim()) {
+    return false;
+  }
+  if (isQuoteLine(text) || isListLine(text)) {
+    return false;
+  }
+  return countLeadingSpaces(text) > 0;
+}
+function isQuoteLine(line) {
+  return /^[ \t]*>/.test(String(line || ""));
+}
+function isCalloutQuoteLine(line) {
+  return /^[ \t]*>\s*\[![^\]]+\]/.test(String(line || ""));
+}
+function stripSingleQuotePrefix(line) {
+  return String(line || "").replace(/^[ \t]*>\s?/, "");
+}
+function countLeadingSpaces(value) {
+  var _a;
+  return ((_a = String(value || "").replace(/\t/g, "    ").match(/^\s*/)) == null ? void 0 : _a[0].length) || 0;
 }
 
 // src/markdown-processor.ts
@@ -689,44 +1355,6 @@ var MarkdownProcessor = class {
           return 0;
         return Math.max(1, Math.round(spaceCount / 2));
       };
-      try {
-        const lines = text.split("\n");
-        const out = [];
-        const taskRe = /^(\s*)([-*+])\s\[[ xX]\]\s+(.*)$/;
-        let inFence = false;
-        let fenceMarker = "";
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          const fenceMatch = line.match(/^\s*(```+|~~~+)/);
-          if (fenceMatch) {
-            const marker = fenceMatch[1];
-            if (!inFence) {
-              inFence = true;
-              fenceMarker = marker[0];
-            } else if (fenceMarker && marker[0] === fenceMarker) {
-              inFence = false;
-              fenceMarker = "";
-            }
-            out.push(line);
-            continue;
-          }
-          if (inFence) {
-            out.push(line);
-            continue;
-          }
-          const m = line.match(taskRe);
-          if (!m) {
-            out.push(line);
-            continue;
-          }
-          const indent = m[1] || "";
-          const bullet = m[2] || "-";
-          const body = m[3] || "";
-          out.push(`${indent}${bullet} ${body}`);
-        }
-        text = out.join("\n");
-      } catch (e) {
-      }
       text = text.replace(/(^|\n)([ ]+)([-*+]\s\[[ xX]\]\s)/g, (_m, p1, spaces, marker) => {
         const level = calcTaskIndentLevel(spaces.length);
         return `${p1}${" ".repeat(level * 2)}${marker}`;
@@ -953,14 +1581,56 @@ var MarkdownProcessor = class {
     }
     return extracted.content;
   }
+  processGeneratedListStructures(content) {
+    const extracted = extractGeneratedListStructures(content, () => this.generatePlaceholder());
+    if (extracted.localFiles.length > 0) {
+      this.localFiles.push(...extracted.localFiles);
+    }
+    return extracted.content;
+  }
+  processTodoBlocks(content) {
+    const todoRegex = /(^|\n)((?:>\s*)?)([ \t]*)([-*+])\s\[( |x|X)\]\s+([^\n]+)(?=\n|$)/g;
+    return String(content || "").replace(todoRegex, (_match, leading, quotePrefix, indent, _marker, state, body) => {
+      const placeholder = this.generatePlaceholder();
+      this.localFiles.push({
+        originalPath: `generated://todo/${placeholder}`,
+        fileName: "todo.md",
+        placeholder,
+        isImage: false,
+        generatedType: "todo",
+        generatedSource: String(body || ""),
+        generatedIndent: `${String(quotePrefix || "")}${String(indent || "")}`,
+        generatedMeta: {
+          checked: String(state || "").toLowerCase() === "x",
+          inQuote: String(quotePrefix || "").includes(">")
+        }
+      });
+      return `${leading || ""}${quotePrefix || ""}${indent || ""}${placeholder}`;
+    });
+  }
+  normalizeEquationContent(formula) {
+    return String(formula || "").replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "").replace(/\\\\(?=[A-Za-z])/g, "\\").replace(/\\\\,/g, "\\,");
+  }
   processInlineDocTokens(content) {
     let next = String(content || "");
+    next = next.replace(/==([\s\S]+?)==/g, (_match, inner) => {
+      const placeholder = this.generatePlaceholder();
+      this.inlineDocTokens.push({
+        placeholder,
+        kind: "text",
+        content: String(inner || ""),
+        style: {
+          background_color: 3
+        }
+      });
+      return placeholder;
+    });
     next = next.replace(/\$\$([\s\S]+?)\$\$/g, (_match, formula) => {
       const placeholder = this.generatePlaceholder();
       this.inlineDocTokens.push({
         placeholder,
         kind: "equation",
-        content: String(formula || "").trim(),
+        content: this.normalizeEquationContent(String(formula || "")),
         displayMode: "block"
       });
       return placeholder;
@@ -970,7 +1640,7 @@ var MarkdownProcessor = class {
       this.inlineDocTokens.push({
         placeholder,
         kind: "equation",
-        content: String(formula || "").trim(),
+        content: this.normalizeEquationContent(String(formula || "")),
         displayMode: "inline"
       });
       return placeholder;
@@ -1156,6 +1826,7 @@ var MarkdownProcessor = class {
       titleSource
     };
     const finalContent = this.processCompleteWithContext(processedContent, context);
+    this.sortLocalFilesByPlaceholderOrder(finalContent);
     return {
       content: finalContent,
       localFiles: [...this.localFiles],
@@ -1293,6 +1964,7 @@ var MarkdownProcessor = class {
       this.calloutBlocks = [];
       this.inlineDocTokens = [];
       const finalContent = this.processCompleteWithContext(processedContent, subContext);
+      this.sortLocalFilesByPlaceholderOrder(finalContent);
       const subDocumentFiles = [...this.localFiles];
       const subDocumentInlineDocTokens = [...this.inlineDocTokens];
       this.localFiles = originalFiles;
@@ -1332,8 +2004,34 @@ var MarkdownProcessor = class {
     processedContent = this.processLinks(processedContent);
     processedContent = this.processTags(processedContent);
     processedContent = this.processHighlights(processedContent);
+    processedContent = this.processGeneratedListStructures(processedContent);
     processedContent = this.cleanupWhitespace(processedContent);
     return processedContent;
+  }
+  sortLocalFilesByPlaceholderOrder(content) {
+    const text = String(content || "");
+    if (!Array.isArray(this.localFiles) || this.localFiles.length <= 1 || !text) {
+      return;
+    }
+    this.localFiles.sort((a, b) => {
+      var _a, _b;
+      const indexA = text.indexOf(a.placeholder);
+      const indexB = text.indexOf(b.placeholder);
+      const hasA = indexA !== -1;
+      const hasB = indexB !== -1;
+      if (hasA && hasB && indexA !== indexB) {
+        return indexA - indexB;
+      }
+      if (hasA !== hasB) {
+        return hasA ? -1 : 1;
+      }
+      const sourceIndexA = typeof ((_a = a.generatedMeta) == null ? void 0 : _a.sourceIndex) === "number" ? a.generatedMeta.sourceIndex : Number.MAX_SAFE_INTEGER;
+      const sourceIndexB = typeof ((_b = b.generatedMeta) == null ? void 0 : _b.sourceIndex) === "number" ? b.generatedMeta.sourceIndex : Number.MAX_SAFE_INTEGER;
+      if (sourceIndexA !== sourceIndexB) {
+        return sourceIndexA - sourceIndexB;
+      }
+      return a.placeholder.localeCompare(b.placeholder);
+    });
   }
   /**
    * 解析 YAML Front Matter
@@ -1968,6 +2666,9 @@ var FeishuApiService = class {
       return "";
     }).join("");
   }
+  normalizeEquationContent(formula) {
+    return String(formula || "").replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "").replace(/\\\\(?=[A-Za-z])/g, "\\").replace(/\\\\,/g, "\\,");
+  }
   async postProcessUploadedDocument(documentId, markdownContent, statusNotice, inlineDocTokens = []) {
     if (!documentId || !markdownContent) {
       return;
@@ -2242,7 +2943,11 @@ var FeishuApiService = class {
           continue;
         }
         try {
-          await this.replacePlaceholderWithInlineDocToken(documentId, placeholderBlock.blockId, placeholderBlock.placeholder, token);
+          if (token.kind === "todo") {
+            await this.replacePlaceholderWithTodoBlock(documentId, placeholderBlock, token);
+          } else {
+            await this.replacePlaceholderWithInlineDocToken(documentId, placeholderBlock.blockId, placeholderBlock.placeholder, token);
+          }
           processedCount++;
         } catch (error) {
           Debug.warn(`\u26A0\uFE0F Failed to replace inline token ${placeholderBlock.placeholder}:`, error);
@@ -4225,34 +4930,7 @@ ${errorMessage}
     const foundBlocks = [];
     for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
       const block = blocks[blockIndex];
-      let textData = null;
-      if (block.text && block.text.elements) {
-        textData = block.text;
-      } else if (block.heading1 && block.heading1.elements) {
-        textData = block.heading1;
-      } else if (block.heading2 && block.heading2.elements) {
-        textData = block.heading2;
-      } else if (block.heading3 && block.heading3.elements) {
-        textData = block.heading3;
-      } else if (block.heading4 && block.heading4.elements) {
-        textData = block.heading4;
-      } else if (block.heading5 && block.heading5.elements) {
-        textData = block.heading5;
-      } else if (block.heading6 && block.heading6.elements) {
-        textData = block.heading6;
-      } else if (block.heading7 && block.heading7.elements) {
-        textData = block.heading7;
-      } else if (block.heading8 && block.heading8.elements) {
-        textData = block.heading8;
-      } else if (block.heading9 && block.heading9.elements) {
-        textData = block.heading9;
-      } else if (block.bullet && block.bullet.elements) {
-        textData = block.bullet;
-      } else if (block.ordered && block.ordered.elements) {
-        textData = block.ordered;
-      } else if (block.code && block.code.elements) {
-        textData = block.code;
-      }
+      const textData = this.getBlockTextData(block);
       if (!textData) {
         continue;
       }
@@ -4279,7 +4957,8 @@ ${errorMessage}
             blockId: block.block_id,
             parentId: block.parent_id,
             index: correctIndex,
-            placeholder
+            placeholder,
+            blockType: Number(block.block_type || 0)
           };
           Debug.log(`\u{1F4CD} Placeholder block position: parentId=${block.parent_id}, index=${correctIndex} (was ${blockIndex})`);
           if (patternInfo.fileInfo) {
@@ -4302,20 +4981,60 @@ ${errorMessage}
    * 提取块的文本内容
    */
   extractBlockTextContent(block) {
-    let textData = null;
-    if (block.text && block.text.elements) {
-      textData = block.text;
-    } else if (block.bullet && block.bullet.elements) {
-      textData = block.bullet;
-    } else if (block.ordered && block.ordered.elements) {
-      textData = block.ordered;
-    } else if (block.code && block.code.elements) {
-      textData = block.code;
-    }
+    const textData = this.getBlockTextData(block);
     if (!textData) {
       return "";
     }
     return this.extractBlockTextContentFromData(textData);
+  }
+  getBlockTextData(block) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
+    if ((_a = block == null ? void 0 : block.text) == null ? void 0 : _a.elements) {
+      return block.text;
+    }
+    if ((_b = block == null ? void 0 : block.heading1) == null ? void 0 : _b.elements) {
+      return block.heading1;
+    }
+    if ((_c = block == null ? void 0 : block.heading2) == null ? void 0 : _c.elements) {
+      return block.heading2;
+    }
+    if ((_d = block == null ? void 0 : block.heading3) == null ? void 0 : _d.elements) {
+      return block.heading3;
+    }
+    if ((_e = block == null ? void 0 : block.heading4) == null ? void 0 : _e.elements) {
+      return block.heading4;
+    }
+    if ((_f = block == null ? void 0 : block.heading5) == null ? void 0 : _f.elements) {
+      return block.heading5;
+    }
+    if ((_g = block == null ? void 0 : block.heading6) == null ? void 0 : _g.elements) {
+      return block.heading6;
+    }
+    if ((_h = block == null ? void 0 : block.heading7) == null ? void 0 : _h.elements) {
+      return block.heading7;
+    }
+    if ((_i = block == null ? void 0 : block.heading8) == null ? void 0 : _i.elements) {
+      return block.heading8;
+    }
+    if ((_j = block == null ? void 0 : block.heading9) == null ? void 0 : _j.elements) {
+      return block.heading9;
+    }
+    if ((_k = block == null ? void 0 : block.bullet) == null ? void 0 : _k.elements) {
+      return block.bullet;
+    }
+    if ((_l = block == null ? void 0 : block.ordered) == null ? void 0 : _l.elements) {
+      return block.ordered;
+    }
+    if ((_m = block == null ? void 0 : block.todo) == null ? void 0 : _m.elements) {
+      return block.todo;
+    }
+    if ((_n = block == null ? void 0 : block.quote) == null ? void 0 : _n.elements) {
+      return block.quote;
+    }
+    if ((_o = block == null ? void 0 : block.code) == null ? void 0 : _o.elements) {
+      return block.code;
+    }
+    return null;
   }
   /**
    * 从文本数据中提取文本内容
@@ -4470,86 +5189,108 @@ ${errorMessage}
    */
   parseMarkdownToTextElements(markdown) {
     const elements = [];
-    let currentIndex = 0;
-    const text = markdown;
-    while (currentIndex < text.length) {
-      const highlightMatch = text.substring(currentIndex).match(/^==(.+?)==/);
-      const boldMatch = text.substring(currentIndex).match(/^\*\*(.*?)\*\*/);
-      const italicMatch = text.substring(currentIndex).match(/^\*(.*?)\*/);
-      const codeMatch = text.substring(currentIndex).match(/^`(.*?)`/);
-      const strikeMatch = text.substring(currentIndex).match(/^~~(.*?)~~/);
-      if (highlightMatch) {
+    const text = String(markdown || "");
+    const colorMap = {
+      gray: 1,
+      brown: 2,
+      orange: 3,
+      yellow: 4,
+      green: 5,
+      blue: 6,
+      purple: 7
+    };
+    const tokenRegex = /<u>([\s\S]*?)<\/u>|<mark>([\s\S]*?)<\/mark>|<span\s+style=["'][^"']*color\s*:\s*(gray|brown|orange|yellow|green|blue|purple)[^"']*["']\s*>([\s\S]*?)<\/span>|==([\s\S]+?)==|\*\*([\s\S]+?)\*\*|(?<!\*)\*([^*\n]+?)\*(?!\*)|`([^`\n]+?)`|~~([\s\S]+?)~~|(?<!\$)\$([^\n$]+?)\$(?!\$)/gi;
+    let lastIndex = 0;
+    let match;
+    while ((match = tokenRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
         elements.push({
           text_run: {
-            content: highlightMatch[1],
+            content: text.slice(lastIndex, match.index)
+          }
+        });
+      }
+      if (match[1] !== void 0) {
+        elements.push({
+          text_run: {
+            content: match[1],
+            text_element_style: { underline: true }
+          }
+        });
+      } else if (match[2] !== void 0) {
+        elements.push({
+          text_run: {
+            content: match[2],
+            text_element_style: { background_color: 3 }
+          }
+        });
+      } else if (match[4] !== void 0) {
+        elements.push({
+          text_run: {
+            content: match[4],
+            text_element_style: { text_color: colorMap[String(match[3] || "").toLowerCase()] || 0 }
+          }
+        });
+      } else if (match[5] !== void 0) {
+        elements.push({
+          text_run: {
+            content: match[5],
+            text_element_style: { background_color: 3 }
+          }
+        });
+      } else if (match[6] !== void 0) {
+        elements.push({
+          text_run: {
+            content: match[6],
             text_element_style: { bold: true }
           }
         });
-        currentIndex += highlightMatch[0].length;
-      } else if (boldMatch) {
+      } else if (match[7] !== void 0) {
         elements.push({
           text_run: {
-            content: boldMatch[1],
-            text_element_style: {
-              bold: true
-            }
+            content: match[7],
+            text_element_style: { italic: true }
           }
         });
-        currentIndex += boldMatch[0].length;
-      } else if (italicMatch && !text.substring(currentIndex).startsWith("**")) {
+      } else if (match[8] !== void 0) {
         elements.push({
           text_run: {
-            content: italicMatch[1],
-            text_element_style: {
-              italic: true
-            }
+            content: match[8],
+            text_element_style: { inline_code: true }
           }
         });
-        currentIndex += italicMatch[0].length;
-      } else if (codeMatch) {
+      } else if (match[9] !== void 0) {
         elements.push({
           text_run: {
-            content: codeMatch[1],
-            text_element_style: {
-              inline_code: true
-            }
+            content: match[9],
+            text_element_style: { strikethrough: true }
           }
         });
-        currentIndex += codeMatch[0].length;
-      } else if (strikeMatch) {
+      } else if (match[10] !== void 0) {
         elements.push({
-          text_run: {
-            content: strikeMatch[1],
-            text_element_style: {
-              strikethrough: true
-            }
+          equation: {
+            content: this.normalizeEquationContent(match[10])
           }
         });
-        currentIndex += strikeMatch[0].length;
-      } else {
-        let nextFormatIndex = text.length;
-        const nextHighlight = text.indexOf("==", currentIndex);
-        const nextBold = text.indexOf("**", currentIndex);
-        const nextItalic = text.indexOf("*", currentIndex);
-        const nextCode = text.indexOf("`", currentIndex);
-        const nextStrike = text.indexOf("~~", currentIndex);
-        [nextHighlight, nextBold, nextItalic, nextCode, nextStrike].forEach((index) => {
-          if (index !== -1 && index < nextFormatIndex) {
-            nextFormatIndex = index;
-          }
-        });
-        const plainText = text.substring(currentIndex, nextFormatIndex);
-        if (plainText) {
-          elements.push({
-            text_run: {
-              content: plainText
-            }
-          });
-        }
-        currentIndex = nextFormatIndex;
       }
+      lastIndex = tokenRegex.lastIndex;
     }
-    return elements;
+    if (lastIndex < text.length) {
+      elements.push({
+        text_run: {
+          content: text.slice(lastIndex)
+        }
+      });
+    }
+    return elements.filter((element) => {
+      if (element == null ? void 0 : element.text_run) {
+        return typeof element.text_run.content === "string" && element.text_run.content.length > 0;
+      }
+      if (element == null ? void 0 : element.equation) {
+        return typeof element.equation.content === "string" && element.equation.content.length > 0;
+      }
+      return false;
+    });
   }
   /**
    * 在 Callout 块内添加标题和内容（带重试机制）
@@ -4715,7 +5456,23 @@ ${errorMessage}
         throw new Error(`\u6682\u4E0D\u652F\u6301\u7684\u751F\u6210\u578B\u6587\u6863\u5757: ${fileInfo.generatedType}`);
       }
       if (generated.kind === "structure") {
-        return await this.insertGeneratedDocStructure(documentId, placeholderBlock, generated.structure);
+        const inserted = await this.insertGeneratedDocStructure(documentId, placeholderBlock, generated.structure);
+        if (fileInfo.generatedType === "table") {
+          const mergeRanges = collectTableMergeRanges(fileInfo.generatedMeta);
+          if (mergeRanges.length > 0) {
+            try {
+              await this.applyTableMergeRanges(documentId, inserted.blockId, mergeRanges);
+            } catch (mergeError) {
+              Debug.error("Apply table merge ranges error:", {
+                documentId,
+                tableBlockId: inserted.blockId,
+                mergeRanges,
+                error: mergeError
+              });
+            }
+          }
+        }
+        return inserted;
       }
       const requestData = {
         index: placeholderBlock.index,
@@ -4734,36 +5491,86 @@ ${errorMessage}
       if (data.code !== 0) {
         throw new Error(data.msg || "\u63D2\u5165\u751F\u6210\u578B\u6587\u6863\u5757\u5931\u8D25");
       }
-      return ((_a = data.data.children[0]) == null ? void 0 : _a.block_id) || "";
+      return {
+        blockId: ((_a = data.data.children[0]) == null ? void 0 : _a.block_id) || "",
+        insertedCount: 1
+      };
     } catch (error) {
       Debug.error("Insert generated doc block error:", error);
       throw error;
     }
   }
   async insertGeneratedDocStructure(documentId, placeholderBlock, structure) {
+    var _a;
     const childrenId = Array.isArray(structure.children_id) ? structure.children_id : [];
     const descendants = Array.isArray(structure.descendants) ? structure.descendants : [];
     if (childrenId.length === 0 || descendants.length === 0) {
       throw new Error("\u751F\u6210\u578B\u6587\u6863\u7ED3\u6784\u4E3A\u7A7A");
     }
-    const response = await (0, import_obsidian2.requestUrl)({
-      url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/descendant?document_revision_id=-1`,
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.settings.accessToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
+    const requestData = {
+      index: placeholderBlock.index,
+      children_id: childrenId,
+      descendants
+    };
+    try {
+      const response = await (0, import_obsidian2.requestUrl)({
+        url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/descendant?document_revision_id=-1`,
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.settings.accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(requestData)
+      });
+      const data = response.json || JSON.parse(response.text);
+      if (data.code !== 0) {
+        throw new Error(data.msg || "\u63D2\u5165\u751F\u6210\u578B\u6587\u6863\u7ED3\u6784\u5931\u8D25");
+      }
+      return {
+        blockId: childrenId[0] || "",
+        insertedCount: childrenId.length
+      };
+    } catch (error) {
+      Debug.error("Insert generated doc structure error:", {
+        documentId,
+        parentId: placeholderBlock.parentId,
         index: placeholderBlock.index,
-        children_id: childrenId,
-        descendants
-      })
-    });
-    const data = response.json || JSON.parse(response.text);
-    if (data.code !== 0) {
-      throw new Error(data.msg || "\u63D2\u5165\u751F\u6210\u578B\u6587\u6863\u7ED3\u6784\u5931\u8D25");
+        childrenCount: childrenId.length,
+        descendantCount: descendants.length,
+        firstChildId: childrenId[0] || "",
+        firstBlockType: (_a = descendants[0]) == null ? void 0 : _a.block_type,
+        error
+      });
+      throw error;
     }
-    return childrenId[0] || "";
+  }
+  async applyTableMergeRanges(documentId, tableBlockId, mergeRanges) {
+    if (!tableBlockId || !Array.isArray(mergeRanges) || mergeRanges.length === 0) {
+      return;
+    }
+    for (const mergeRange of mergeRanges) {
+      await this.rateLimitController.throttle("block");
+      const response = await (0, import_obsidian2.requestUrl)({
+        url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/batch_update`,
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bearer ${this.settings.accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          requests: [
+            {
+              block_id: tableBlockId,
+              merge_table_cells: mergeRange
+            }
+          ]
+        })
+      });
+      const data = response.json || JSON.parse(response.text);
+      if (data.code !== 0) {
+        throw new Error(data.msg || "\u5408\u5E76\u8868\u683C\u5355\u5143\u683C\u5931\u8D25");
+      }
+    }
   }
   /**
    * 上传文件素材到飞书文档
@@ -5275,7 +6082,7 @@ ${errorMessage}
         if (element.text_run && element.text_run.content) {
           const content = element.text_run.content;
           if (content.includes(placeholderText)) {
-            const cleanedContent = content.replace(placeholderText, "").trim();
+            const cleanedContent = content.replace(placeholderText, "");
             if (cleanedContent.length > 0) {
               newElements.push({
                 text_run: {
@@ -5498,7 +6305,7 @@ ${errorMessage}
           Debug.log(`\u23F1\uFE0F Waiting ${delay}ms before deleting placeholders...`);
           await new Promise((resolve) => setTimeout(resolve, delay));
           Debug.log(`\u{1F50D} Searching for placeholder text blocks to delete...`);
-          for (const calloutInfo of calloutBlocks || []) {
+          for (const calloutInfo of processedCalloutBlocks.map((block) => block.calloutInfo).filter(Boolean)) {
             try {
               await this.deleteBlockByPlaceholderText(documentId, calloutInfo.placeholder);
             } catch (error) {
@@ -5569,8 +6376,12 @@ ${errorMessage}
           if (statusNotice) {
             statusNotice.setMessage(`\u{1F4D8} \u6B63\u5728\u63D2\u5165\u6587\u6863\u5757 ${i + 1}/${sortedPlaceholderBlocks.length}: ${fileInfo.generatedType}...`);
           }
-          await this.insertGeneratedDocBlock(documentId, adjustedPlaceholderBlock);
+          const generatedInsert = await this.insertGeneratedDocBlock(documentId, adjustedPlaceholderBlock);
           Debug.log(`\u2705 Successfully processed generated block: ${fileInfo.generatedType}`);
+          insertedCountByParent.set(
+            placeholderBlock.parentId,
+            alreadyInserted + Math.max(1, Number(generatedInsert.insertedCount) || 1)
+          );
         } else {
           if (statusNotice) {
             statusNotice.setMessage(`\u{1F4E4} \u6B63\u5728\u4E0A\u4F20\u6587\u4EF6 ${i + 1}/${sortedPlaceholderBlocks.length}: ${fileInfo.fileName}...`);
@@ -5585,9 +6396,9 @@ ${errorMessage}
           const fileToken = await this.uploadFileToDocument(documentId, newBlockId, fileInfo, fileContent);
           await this.setFileBlockContent(documentId, newBlockId, fileToken, fileInfo.isImage);
           Debug.log(`\u2705 Successfully processed file: ${fileInfo.fileName}`);
+          insertedCountByParent.set(placeholderBlock.parentId, alreadyInserted + 1);
         }
         processedBlocks.push(placeholderBlock);
-        insertedCountByParent.set(placeholderBlock.parentId, alreadyInserted + 1);
       } catch (fileError) {
         const displayName = fileInfo.generatedType || fileInfo.fileName;
         Debug.error(`\u274C Failed to process file-like block ${displayName}:`, fileError);
@@ -5598,6 +6409,17 @@ ${errorMessage}
         statusNotice.setMessage(`\u{1F504} \u6B63\u5728\u6E05\u7406 ${processedBlocks.length} \u4E2A\u5360\u4F4D\u7B26...`);
       }
       await this.batchReplacePlaceholderText(documentId, processedBlocks);
+      const tablePlaceholders = processedBlocks.filter((block) => {
+        var _a;
+        return ((_a = block.fileInfo) == null ? void 0 : _a.generatedType) === "table";
+      });
+      for (const tablePlaceholder of tablePlaceholders) {
+        try {
+          await this.deleteBlockByPlaceholderText(documentId, tablePlaceholder.placeholder);
+        } catch (cleanupError) {
+          Debug.error(`\u274C Failed to cleanup table placeholder ${tablePlaceholder.placeholder}:`, cleanupError);
+        }
+      }
     }
   }
   /**
@@ -5629,12 +6451,20 @@ ${errorMessage}
       fileOrderMap.set(file.placeholder, index);
     });
     const sorted = placeholderBlocks.sort((a, b) => {
-      var _a, _b, _c, _d, _e, _f;
+      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
       const orderA = (_a = fileOrderMap.get(a.placeholder)) != null ? _a : 999;
       const orderB = (_b = fileOrderMap.get(b.placeholder)) != null ? _b : 999;
-      const nameA = ((_c = a.fileInfo) == null ? void 0 : _c.fileName) || ((_d = a.calloutInfo) == null ? void 0 : _d.type) || "unknown";
-      const nameB = ((_e = b.fileInfo) == null ? void 0 : _e.fileName) || ((_f = b.calloutInfo) == null ? void 0 : _f.type) || "unknown";
-      Debug.log(`\u{1F504} Comparing: ${nameA}(order:${orderA}, index:${a.index}) vs ${nameB}(order:${orderB}, index:${b.index})`);
+      const sourceIndexA = typeof ((_d = (_c = a.fileInfo) == null ? void 0 : _c.generatedMeta) == null ? void 0 : _d.sourceIndex) === "number" ? Number((_f = (_e = a.fileInfo) == null ? void 0 : _e.generatedMeta) == null ? void 0 : _f.sourceIndex) : Number.MAX_SAFE_INTEGER;
+      const sourceIndexB = typeof ((_h = (_g = b.fileInfo) == null ? void 0 : _g.generatedMeta) == null ? void 0 : _h.sourceIndex) === "number" ? Number((_j = (_i = b.fileInfo) == null ? void 0 : _i.generatedMeta) == null ? void 0 : _j.sourceIndex) : Number.MAX_SAFE_INTEGER;
+      const nameA = ((_k = a.fileInfo) == null ? void 0 : _k.fileName) || ((_l = a.calloutInfo) == null ? void 0 : _l.type) || "unknown";
+      const nameB = ((_m = b.fileInfo) == null ? void 0 : _m.fileName) || ((_n = b.calloutInfo) == null ? void 0 : _n.type) || "unknown";
+      Debug.log(`\u{1F504} Comparing: ${nameA}(order:${orderA}, index:${a.index}, sourceIndex:${sourceIndexA}) vs ${nameB}(order:${orderB}, index:${b.index}, sourceIndex:${sourceIndexB})`);
+      if (a.parentId === b.parentId && a.index !== b.index) {
+        return a.index - b.index;
+      }
+      if (sourceIndexA !== sourceIndexB) {
+        return sourceIndexA - sourceIndexB;
+      }
       if (orderA !== orderB) {
         return orderA - orderB;
       }
@@ -6096,17 +6926,12 @@ ${errorMessage}
         Debug.error(`\u274C No block data found for ${blockId}`);
         return null;
       }
-      let elements = [];
-      if (block.text && block.text.elements) {
-        elements = block.text.elements;
-      } else if (block.bullet && block.bullet.elements) {
-        elements = block.bullet.elements;
-      } else if (block.ordered && block.ordered.elements) {
-        elements = block.ordered.elements;
-      } else {
+      const textData = this.getBlockTextData(block);
+      if (!textData) {
         Debug.warn(`\u26A0\uFE0F No text elements found in block ${blockId}, block type: ${block.block_type}`);
         return { elements: [] };
       }
+      const elements = Array.isArray(textData.elements) ? textData.elements : [];
       Debug.log(`\u{1F4CB} Retrieved ${elements.length} elements from block ${blockId}`);
       return { elements };
     } catch (error) {
@@ -6411,7 +7236,7 @@ ${errorMessage}
     if (token.kind === "equation") {
       return {
         equation: {
-          content: token.content,
+          content: this.normalizeEquationContent(token.content),
           text_element_style: mergedStyle
         }
       };
@@ -6422,6 +7247,28 @@ ${errorMessage}
         text_element_style: mergedStyle
       }
     };
+  }
+  async replacePlaceholderWithTodoBlock(documentId, placeholderBlock, token) {
+    const response = await (0, import_obsidian2.requestUrl)({
+      url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.blockId}`,
+      method: "PATCH",
+      headers: {
+        "Authorization": `Bearer ${this.settings.accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        replace_todo: {
+          checked: token.todoState === "checked"
+        },
+        update_text_elements: {
+          elements: this.parseMarkdownToTextElements(token.content)
+        }
+      })
+    });
+    const data = response.json || JSON.parse(response.text);
+    if (data.code !== 0) {
+      throw new Error(data.msg || "\u66FF\u6362\u5F85\u529E\u5360\u4F4D\u5931\u8D25");
+    }
   }
   /**
    * 设置文档分享权限
@@ -10380,7 +11227,7 @@ var DocxBlocksToMarkdown = class {
       const t = String(s || "").trim();
       if (!t)
         return false;
-      return /^(flowchart|sequenceDiagram|classDiagram|erDiagram|stateDiagram|gantt|pie)\b/.test(t);
+      return /^(flowchart|sequenceDiagram|classDiagram|erDiagram|stateDiagram(?:-v2)?|gantt|pie|mindmap|journey|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment)\b/.test(t);
     };
     const render = (blockId, indent, inQuote = false, inContainer = false) => {
       const block = idToBlock.get(blockId);
@@ -11129,6 +11976,9 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     });
     this.registerFileMappingEvents();
     this.addSettingTab(new FeishuSettingTab(this.app, this));
+    this.addRibbonIcon("refresh-cw", "\u667A\u80FD\u53CC\u5411\u540C\u6B65\u5F53\u524D\u7B14\u8BB0", () => {
+      this.smartSyncCurrentNote();
+    });
     this.registerCommands();
     this.registerMenus();
     this.configureScheduledSync();

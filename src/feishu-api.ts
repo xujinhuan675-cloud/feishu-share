@@ -25,7 +25,7 @@ import { FEISHU_CONFIG, FEISHU_ERROR_MESSAGES } from './constants';
 import { Debug } from './debug';
 import { MarkdownProcessor } from './markdown-processor';
 import { buildDescendantPayloadFromConvertedData, collectDocxUploadCompatibilityWarnings } from './docx-convert';
-import { buildGeneratedDocBlock, type GeneratedDocStructure } from './feishu-doc-blocks';
+import { buildGeneratedDocBlock, collectTableMergeRanges, type GeneratedDocStructure, type TableMergeRange } from './feishu-doc-blocks';
 
 export type FeishuDocumentMeta = {
 	documentId: string;
@@ -557,6 +557,14 @@ export class FeishuApiService {
 		}).join('');
 	}
 
+	private normalizeEquationContent(formula: string): string {
+		return String(formula || '')
+			.replace(/\r\n?/g, '\n')
+			.replace(/^\n+|\n+$/g, '')
+			.replace(/\\\\(?=[A-Za-z])/g, '\\')
+			.replace(/\\\\,/g, '\\,');
+	}
+
 	private async postProcessUploadedDocument(documentId: string, markdownContent: string, statusNotice?: Notice, inlineDocTokens: InlineDocTokenInfo[] = []): Promise<void> {
 		if (!documentId || !markdownContent) {
 			return;
@@ -859,7 +867,11 @@ export class FeishuApiService {
 				}
 
 				try {
-					await this.replacePlaceholderWithInlineDocToken(documentId, placeholderBlock.blockId, placeholderBlock.placeholder, token);
+					if (token.kind === 'todo') {
+						await this.replacePlaceholderWithTodoBlock(documentId, placeholderBlock, token);
+					} else {
+						await this.replacePlaceholderWithInlineDocToken(documentId, placeholderBlock.blockId, placeholderBlock.placeholder, token);
+					}
 					processedCount++;
 				} catch (error) {
 					Debug.warn(`⚠️ Failed to replace inline token ${placeholderBlock.placeholder}:`, error);
@@ -3368,35 +3380,7 @@ export class FeishuApiService {
 		for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
 			const block = blocks[blockIndex];
 
-			// 处理文本块、标题块、列表块等包含文本内容的块
-			let textData = null;
-			if (block.text && block.text.elements) {
-				textData = block.text;
-			} else if (block.heading1 && block.heading1.elements) {
-				textData = block.heading1;
-			} else if (block.heading2 && block.heading2.elements) {
-				textData = block.heading2;
-			} else if (block.heading3 && block.heading3.elements) {
-				textData = block.heading3;
-			} else if (block.heading4 && block.heading4.elements) {
-				textData = block.heading4;
-			} else if (block.heading5 && block.heading5.elements) {
-				textData = block.heading5;
-			} else if (block.heading6 && block.heading6.elements) {
-				textData = block.heading6;
-			} else if (block.heading7 && block.heading7.elements) {
-				textData = block.heading7;
-			} else if (block.heading8 && block.heading8.elements) {
-				textData = block.heading8;
-			} else if (block.heading9 && block.heading9.elements) {
-				textData = block.heading9;
-			} else if (block.bullet && block.bullet.elements) {
-				textData = block.bullet; // 无序列表块
-			} else if (block.ordered && block.ordered.elements) {
-				textData = block.ordered; // 有序列表块
-			} else if (block.code && block.code.elements) {
-				textData = block.code;
-			}
+			const textData = this.getBlockTextData(block);
 
 			if (!textData) {
 				continue;
@@ -3435,7 +3419,8 @@ export class FeishuApiService {
 						blockId: block.block_id,
 						parentId: block.parent_id,
 						index: correctIndex,
-						placeholder: placeholder
+						placeholder: placeholder,
+						blockType: Number(block.block_type || 0)
 					};
 
 					Debug.log(`📍 Placeholder block position: parentId=${block.parent_id}, index=${correctIndex} (was ${blockIndex})`);
@@ -3468,23 +3453,61 @@ export class FeishuApiService {
 	 * 提取块的文本内容
 	 */
 	private extractBlockTextContent(block: any): string {
-		// 处理不同类型的块
-		let textData = null;
-		if (block.text && block.text.elements) {
-			textData = block.text;
-		} else if (block.bullet && block.bullet.elements) {
-			textData = block.bullet;
-		} else if (block.ordered && block.ordered.elements) {
-			textData = block.ordered;
-		} else if (block.code && block.code.elements) {
-			textData = block.code;
-		}
-
+		const textData = this.getBlockTextData(block);
 		if (!textData) {
 			return '';
 		}
 
 		return this.extractBlockTextContentFromData(textData);
+	}
+
+	private getBlockTextData(block: any): { elements: any[] } | null {
+		if (block?.text?.elements) {
+			return block.text;
+		}
+		if (block?.heading1?.elements) {
+			return block.heading1;
+		}
+		if (block?.heading2?.elements) {
+			return block.heading2;
+		}
+		if (block?.heading3?.elements) {
+			return block.heading3;
+		}
+		if (block?.heading4?.elements) {
+			return block.heading4;
+		}
+		if (block?.heading5?.elements) {
+			return block.heading5;
+		}
+		if (block?.heading6?.elements) {
+			return block.heading6;
+		}
+		if (block?.heading7?.elements) {
+			return block.heading7;
+		}
+		if (block?.heading8?.elements) {
+			return block.heading8;
+		}
+		if (block?.heading9?.elements) {
+			return block.heading9;
+		}
+		if (block?.bullet?.elements) {
+			return block.bullet;
+		}
+		if (block?.ordered?.elements) {
+			return block.ordered;
+		}
+		if (block?.todo?.elements) {
+			return block.todo;
+		}
+		if (block?.quote?.elements) {
+			return block.quote;
+		}
+		if (block?.code?.elements) {
+			return block.code;
+		}
+		return null;
 	}
 
 	/**
@@ -3674,102 +3697,113 @@ export class FeishuApiService {
 	 */
 	private parseMarkdownToTextElements(markdown: string): any[] {
 		const elements: any[] = [];
+		const text = String(markdown || '');
+		const colorMap: Record<string, number> = {
+			gray: 1,
+			brown: 2,
+			orange: 3,
+			yellow: 4,
+			green: 5,
+			blue: 6,
+			purple: 7
+		};
+		const tokenRegex = /<u>([\s\S]*?)<\/u>|<mark>([\s\S]*?)<\/mark>|<span\s+style=["'][^"']*color\s*:\s*(gray|brown|orange|yellow|green|blue|purple)[^"']*["']\s*>([\s\S]*?)<\/span>|==([\s\S]+?)==|\*\*([\s\S]+?)\*\*|(?<!\*)\*([^*\n]+?)\*(?!\*)|`([^`\n]+?)`|~~([\s\S]+?)~~|(?<!\$)\$([^\n$]+?)\$(?!\$)/gi;
+		let lastIndex = 0;
+		let match: RegExpExecArray | null;
 
-		// 简单的 Markdown 解析器
-		// 支持：**粗体**、*斜体*、`代码`、~~删除线~~、==高亮==（按粗体处理）
-
-		let currentIndex = 0;
-		const text = markdown;
-
-		while (currentIndex < text.length) {
-			// 查找下一个格式标记
-			const highlightMatch = text.substring(currentIndex).match(/^==(.+?)==/);
-			const boldMatch = text.substring(currentIndex).match(/^\*\*(.*?)\*\*/);
-			const italicMatch = text.substring(currentIndex).match(/^\*(.*?)\*/);
-			const codeMatch = text.substring(currentIndex).match(/^`(.*?)`/);
-			const strikeMatch = text.substring(currentIndex).match(/^~~(.*?)~~/);
-
-			if (highlightMatch) {
-				// ==高亮== 作为粗体处理
+		while ((match = tokenRegex.exec(text)) !== null) {
+			if (match.index > lastIndex) {
 				elements.push({
 					text_run: {
-						content: highlightMatch[1],
+						content: text.slice(lastIndex, match.index)
+					}
+				});
+			}
+
+			if (match[1] !== undefined) {
+				elements.push({
+					text_run: {
+						content: match[1],
+						text_element_style: { underline: true }
+					}
+				});
+			} else if (match[2] !== undefined) {
+				elements.push({
+					text_run: {
+						content: match[2],
+						text_element_style: { background_color: 3 }
+					}
+				});
+			} else if (match[4] !== undefined) {
+				elements.push({
+					text_run: {
+						content: match[4],
+						text_element_style: { text_color: colorMap[String(match[3] || '').toLowerCase()] || 0 }
+					}
+				});
+			} else if (match[5] !== undefined) {
+				elements.push({
+					text_run: {
+						content: match[5],
+						text_element_style: { background_color: 3 }
+					}
+				});
+			} else if (match[6] !== undefined) {
+				elements.push({
+					text_run: {
+						content: match[6],
 						text_element_style: { bold: true }
 					}
 				});
-				currentIndex += highlightMatch[0].length;
-			} else if (boldMatch) {
-				// 粗体
+			} else if (match[7] !== undefined) {
 				elements.push({
 					text_run: {
-						content: boldMatch[1],
-						text_element_style: {
-							bold: true
-						}
+						content: match[7],
+						text_element_style: { italic: true }
 					}
 				});
-				currentIndex += boldMatch[0].length;
-			} else if (italicMatch && !text.substring(currentIndex).startsWith('**')) {
-				// 斜体（确保不是粗体的一部分）
+			} else if (match[8] !== undefined) {
 				elements.push({
 					text_run: {
-						content: italicMatch[1],
-						text_element_style: {
-							italic: true
-						}
+						content: match[8],
+						text_element_style: { inline_code: true }
 					}
 				});
-				currentIndex += italicMatch[0].length;
-			} else if (codeMatch) {
-				// 行内代码
+			} else if (match[9] !== undefined) {
 				elements.push({
 					text_run: {
-						content: codeMatch[1],
-						text_element_style: {
-							inline_code: true
-						}
+						content: match[9],
+						text_element_style: { strikethrough: true }
 					}
 				});
-				currentIndex += codeMatch[0].length;
-			} else if (strikeMatch) {
-				// 删除线
+			} else if (match[10] !== undefined) {
 				elements.push({
-					text_run: {
-						content: strikeMatch[1],
-						text_element_style: {
-							strikethrough: true
-						}
+					equation: {
+						content: this.normalizeEquationContent(match[10])
 					}
 				});
-				currentIndex += strikeMatch[0].length;
-			} else {
-				// 普通文本，查找到下一个格式标记或字符串结尾
-				let nextFormatIndex = text.length;
-				const nextHighlight = text.indexOf('==', currentIndex);
-				const nextBold = text.indexOf('**', currentIndex);
-				const nextItalic = text.indexOf('*', currentIndex);
-				const nextCode = text.indexOf('`', currentIndex);
-				const nextStrike = text.indexOf('~~', currentIndex);
-
-				[nextHighlight, nextBold, nextItalic, nextCode, nextStrike].forEach(index => {
-					if (index !== -1 && index < nextFormatIndex) {
-						nextFormatIndex = index;
-					}
-				});
-
-				const plainText = text.substring(currentIndex, nextFormatIndex);
-				if (plainText) {
-					elements.push({
-						text_run: {
-							content: plainText
-						}
-					});
-				}
-				currentIndex = nextFormatIndex;
 			}
+
+			lastIndex = tokenRegex.lastIndex;
 		}
 
-		return elements;
+		if (lastIndex < text.length) {
+			elements.push({
+				text_run: {
+					content: text.slice(lastIndex)
+				}
+			});
+		}
+
+		return elements.filter((element) => {
+			if (element?.text_run) {
+				return typeof element.text_run.content === 'string' && element.text_run.content.length > 0;
+			}
+			if (element?.equation) {
+				return typeof element.equation.content === 'string' && element.equation.content.length > 0;
+			}
+			return false;
+		});
 	}
 
 	/**
@@ -3962,7 +3996,10 @@ export class FeishuApiService {
 		}
 	}
 
-private async insertGeneratedDocBlock(documentId: string, placeholderBlock: PlaceholderBlock): Promise<string> {
+	private async insertGeneratedDocBlock(
+		documentId: string,
+		placeholderBlock: PlaceholderBlock
+	): Promise<{ blockId: string; insertedCount: number }> {
 		try {
 			const fileInfo = placeholderBlock.fileInfo;
 			if (!fileInfo?.generatedType) {
@@ -3975,7 +4012,23 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 			}
 
 			if (generated.kind === 'structure') {
-				return await this.insertGeneratedDocStructure(documentId, placeholderBlock, generated.structure);
+				const inserted = await this.insertGeneratedDocStructure(documentId, placeholderBlock, generated.structure);
+				if (fileInfo.generatedType === 'table') {
+					const mergeRanges = collectTableMergeRanges(fileInfo.generatedMeta);
+					if (mergeRanges.length > 0) {
+						try {
+							await this.applyTableMergeRanges(documentId, inserted.blockId, mergeRanges);
+						} catch (mergeError) {
+							Debug.error('Apply table merge ranges error:', {
+								documentId,
+								tableBlockId: inserted.blockId,
+								mergeRanges,
+								error: mergeError
+							});
+						}
+					}
+				}
+				return inserted;
 			}
 
 			const requestData = {
@@ -3998,7 +4051,10 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 				throw new Error(data.msg || '插入生成型文档块失败');
 			}
 
-			return data.data.children[0]?.block_id || '';
+			return {
+				blockId: data.data.children[0]?.block_id || '',
+				insertedCount: 1
+			};
 		} catch (error) {
 			Debug.error('Insert generated doc block error:', error);
 			throw error;
@@ -4009,33 +4065,87 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 		documentId: string,
 		placeholderBlock: PlaceholderBlock,
 		structure: GeneratedDocStructure
-	): Promise<string> {
+	): Promise<{ blockId: string; insertedCount: number }> {
 		const childrenId = Array.isArray(structure.children_id) ? structure.children_id : [];
 		const descendants = Array.isArray(structure.descendants) ? structure.descendants : [];
 		if (childrenId.length === 0 || descendants.length === 0) {
 			throw new Error('生成型文档结构为空');
 		}
 
-		const response = await requestUrl({
-			url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/descendant?document_revision_id=-1`,
-			method: 'POST',
-			headers: {
-				'Authorization': `Bearer ${this.settings.accessToken}`,
-				'Content-Type': 'application/json'
-			},
-			body: JSON.stringify({
-				index: placeholderBlock.index,
-				children_id: childrenId,
-				descendants
-			})
-		});
+		const requestData = {
+			index: placeholderBlock.index,
+			children_id: childrenId,
+			descendants
+		};
 
-		const data = response.json || JSON.parse(response.text);
-		if (data.code !== 0) {
-			throw new Error(data.msg || '插入生成型文档结构失败');
+		try {
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/descendant?document_revision_id=-1`,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestData)
+			});
+
+			const data = response.json || JSON.parse(response.text);
+			if (data.code !== 0) {
+				throw new Error(data.msg || '插入生成型文档结构失败');
+			}
+
+			return {
+				blockId: childrenId[0] || '',
+				insertedCount: childrenId.length
+			};
+		} catch (error) {
+			Debug.error('Insert generated doc structure error:', {
+				documentId,
+				parentId: placeholderBlock.parentId,
+				index: placeholderBlock.index,
+				childrenCount: childrenId.length,
+				descendantCount: descendants.length,
+				firstChildId: childrenId[0] || '',
+				firstBlockType: descendants[0]?.block_type,
+				error
+			});
+			throw error;
+		}
+	}
+
+	private async applyTableMergeRanges(
+		documentId: string,
+		tableBlockId: string,
+		mergeRanges: TableMergeRange[]
+	): Promise<void> {
+		if (!tableBlockId || !Array.isArray(mergeRanges) || mergeRanges.length === 0) {
+			return;
 		}
 
-		return childrenId[0] || '';
+		for (const mergeRange of mergeRanges) {
+			await this.rateLimitController.throttle('block');
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/batch_update`,
+				method: 'PATCH',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					requests: [
+						{
+							block_id: tableBlockId,
+							merge_table_cells: mergeRange
+						}
+					]
+				})
+			});
+
+			const data = response.json || JSON.parse(response.text);
+			if (data.code !== 0) {
+				throw new Error(data.msg || '合并表格单元格失败');
+			}
+		}
 	}
 
 	/**
@@ -4699,7 +4809,7 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 
 					if (content.includes(placeholderText)) {
 						// 如果元素包含占位符，移除占位符部分
-						const cleanedContent = content.replace(placeholderText, '').trim();
+						const cleanedContent = content.replace(placeholderText, '');
 
 						if (cleanedContent.length > 0) {
 							// 如果还有其他内容，保留
@@ -5002,7 +5112,7 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 					// 使用更精确的删除方法：直接删除包含占位符文本的块
 					Debug.log(`🔍 Searching for placeholder text blocks to delete...`);
 
-					for (const calloutInfo of calloutBlocks || []) {
+					for (const calloutInfo of processedCalloutBlocks.map((block) => block.calloutInfo).filter(Boolean) as CalloutInfo[]) {
 						try {
 							await this.deleteBlockByPlaceholderText(documentId, calloutInfo.placeholder);
 						} catch (error) {
@@ -5089,8 +5199,13 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 					if (statusNotice) {
 						statusNotice.setMessage(`📘 正在插入文档块 ${i + 1}/${sortedPlaceholderBlocks.length}: ${fileInfo.generatedType}...`);
 					}
-					await this.insertGeneratedDocBlock(documentId, adjustedPlaceholderBlock);
+					const generatedInsert = await this.insertGeneratedDocBlock(documentId, adjustedPlaceholderBlock);
 					Debug.log(`✅ Successfully processed generated block: ${fileInfo.generatedType}`);
+					// descendant 结构可能一次插入多个同级根块，后续占位符索引必须整体后移。
+					insertedCountByParent.set(
+						placeholderBlock.parentId,
+						alreadyInserted + Math.max(1, Number(generatedInsert.insertedCount) || 1)
+					);
 				} else {
 					if (statusNotice) {
 						statusNotice.setMessage(`📤 正在上传文件 ${i + 1}/${sortedPlaceholderBlocks.length}: ${fileInfo.fileName}...`);
@@ -5107,10 +5222,10 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 					const fileToken = await this.uploadFileToDocument(documentId, newBlockId, fileInfo, fileContent);
 					await this.setFileBlockContent(documentId, newBlockId, fileToken, fileInfo.isImage);
 					Debug.log(`✅ Successfully processed file: ${fileInfo.fileName}`);
+					insertedCountByParent.set(placeholderBlock.parentId, alreadyInserted + 1);
 				}
 
 				processedBlocks.push(placeholderBlock);
-				insertedCountByParent.set(placeholderBlock.parentId, alreadyInserted + 1);
 			} catch (fileError) {
 				const displayName = fileInfo.generatedType || fileInfo.fileName;
 				Debug.error(`❌ Failed to process file-like block ${displayName}:`, fileError);
@@ -5122,6 +5237,14 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 				statusNotice.setMessage(`🔄 正在清理 ${processedBlocks.length} 个占位符...`);
 			}
 			await this.batchReplacePlaceholderText(documentId, processedBlocks);
+			const tablePlaceholders = processedBlocks.filter((block) => block.fileInfo?.generatedType === 'table');
+			for (const tablePlaceholder of tablePlaceholders) {
+				try {
+					await this.deleteBlockByPlaceholderText(documentId, tablePlaceholder.placeholder);
+				} catch (cleanupError) {
+					Debug.error(`❌ Failed to cleanup table placeholder ${tablePlaceholder.placeholder}:`, cleanupError);
+				}
+			}
 		}
 	}
 
@@ -5158,20 +5281,34 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 			fileOrderMap.set(file.placeholder, index);
 		});
 
-		// 按照原始顺序排序（优先使用localFiles顺序，其次使用文档中的index）
+		// 按照原始顺序排序：
+		// 1. 同一父块下优先使用文档中的 index，避免不同抽取阶段的块互相串位
+		// 2. 再回退到 localFiles 的顺序和 sourceIndex
 		const sorted = placeholderBlocks.sort((a, b) => {
 			const orderA = fileOrderMap.get(a.placeholder) ?? 999;
 			const orderB = fileOrderMap.get(b.placeholder) ?? 999;
+			const sourceIndexA = typeof a.fileInfo?.generatedMeta?.sourceIndex === 'number'
+				? Number(a.fileInfo?.generatedMeta?.sourceIndex)
+				: Number.MAX_SAFE_INTEGER;
+			const sourceIndexB = typeof b.fileInfo?.generatedMeta?.sourceIndex === 'number'
+				? Number(b.fileInfo?.generatedMeta?.sourceIndex)
+				: Number.MAX_SAFE_INTEGER;
 			const nameA = a.fileInfo?.fileName || a.calloutInfo?.type || 'unknown';
 			const nameB = b.fileInfo?.fileName || b.calloutInfo?.type || 'unknown';
-			Debug.log(`🔄 Comparing: ${nameA}(order:${orderA}, index:${a.index}) vs ${nameB}(order:${orderB}, index:${b.index})`);
+			Debug.log(`🔄 Comparing: ${nameA}(order:${orderA}, index:${a.index}, sourceIndex:${sourceIndexA}) vs ${nameB}(order:${orderB}, index:${b.index}, sourceIndex:${sourceIndexB})`);
 
-			// 如果localFiles顺序不同，使用localFiles顺序
+			if (a.parentId === b.parentId && a.index !== b.index) {
+				return a.index - b.index;
+			}
+
+			if (sourceIndexA !== sourceIndexB) {
+				return sourceIndexA - sourceIndexB;
+			}
+
 			if (orderA !== orderB) {
 				return orderA - orderB;
 			}
 
-			// 如果localFiles顺序相同，使用文档中的index
 			return a.index - b.index;
 		});
 
@@ -5751,20 +5888,13 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 				return null;
 			}
 
-			// 根据块类型获取相应的文本元素
-			let elements: any[] = [];
-
-			if (block.text && block.text.elements) {
-				elements = block.text.elements;
-			} else if (block.bullet && block.bullet.elements) {
-				elements = block.bullet.elements;
-			} else if (block.ordered && block.ordered.elements) {
-				elements = block.ordered.elements;
-			} else {
+			const textData = this.getBlockTextData(block);
+			if (!textData) {
 				Debug.warn(`⚠️ No text elements found in block ${blockId}, block type: ${block.block_type}`);
 				return { elements: [] };
 			}
 
+			const elements = Array.isArray(textData.elements) ? textData.elements : [];
 			Debug.log(`📋 Retrieved ${elements.length} elements from block ${blockId}`);
 			return { elements };
 
@@ -6150,7 +6280,7 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 		if (token.kind === 'equation') {
 			return {
 				equation: {
-					content: token.content,
+					content: this.normalizeEquationContent(token.content),
 					text_element_style: mergedStyle
 				}
 			};
@@ -6162,6 +6292,34 @@ private async insertGeneratedDocBlock(documentId: string, placeholderBlock: Plac
 				text_element_style: mergedStyle
 			}
 		};
+	}
+
+	private async replacePlaceholderWithTodoBlock(
+		documentId: string,
+		placeholderBlock: PlaceholderBlock,
+		token: InlineDocTokenInfo
+	): Promise<void> {
+		const response = await requestUrl({
+			url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.blockId}`,
+			method: 'PATCH',
+			headers: {
+				'Authorization': `Bearer ${this.settings.accessToken}`,
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({
+				replace_todo: {
+					checked: token.todoState === 'checked'
+				},
+				update_text_elements: {
+					elements: this.parseMarkdownToTextElements(token.content)
+				}
+			})
+		});
+
+		const data = response.json || JSON.parse(response.text);
+		if (data.code !== 0) {
+			throw new Error(data.msg || '替换待办占位失败');
+		}
 	}
 
 

@@ -3,7 +3,7 @@ import { LocalFileInfo, MarkdownProcessResult, ProcessContext, FrontMatterData, 
 import { Debug } from './debug';
 import { CALLOUT_TYPE_MAPPING } from './constants';
 import { shouldPreserveFeishuSpecialLink } from './docx-convert';
-import { extractGeneratedDocBlocks } from './feishu-doc-blocks';
+import { extractGeneratedDocBlocks, extractGeneratedListStructures } from './feishu-doc-blocks';
 
 /**
  * Markdown 内容处理器
@@ -86,45 +86,6 @@ export class MarkdownProcessor {
 				if (!spaceCount || spaceCount <= 0) return 0;
 				return Math.max(1, Math.round(spaceCount / 2));
 			};
-
-			try {
-				const lines = text.split('\n');
-				const out: string[] = [];
-				const taskRe = /^(\s*)([-*+])\s\[[ xX]\]\s+(.*)$/;
-				let inFence = false;
-				let fenceMarker = '';
-				for (let i = 0; i < lines.length; i++) {
-					const line = lines[i];
-					const fenceMatch = line.match(/^\s*(```+|~~~+)/);
-					if (fenceMatch) {
-						const marker = fenceMatch[1];
-						if (!inFence) {
-							inFence = true;
-							fenceMarker = marker[0];
-						} else if (fenceMarker && marker[0] === fenceMarker) {
-							inFence = false;
-							fenceMarker = '';
-						}
-						out.push(line);
-						continue;
-					}
-					if (inFence) {
-						out.push(line);
-						continue;
-					}
-					const m = line.match(taskRe);
-					if (!m) {
-						out.push(line);
-						continue;
-					}
-					const indent = m[1] || '';
-					const bullet = m[2] || '-';
-					const body = m[3] || '';
-					out.push(`${indent}${bullet} ${body}`);
-				}
-				text = out.join('\n');
-			} catch {
-			}
 
 			text = text.replace(/(^|\n)([ ]+)([-*+]\s\[[ xX]\]\s)/g, (_m, p1, spaces, marker) => {
 				const level = calcTaskIndentLevel(spaces.length);
@@ -413,15 +374,65 @@ export class MarkdownProcessor {
 		return extracted.content;
 	}
 
+	private processGeneratedListStructures(content: string): string {
+		const extracted = extractGeneratedListStructures(content, () => this.generatePlaceholder());
+		if (extracted.localFiles.length > 0) {
+			this.localFiles.push(...extracted.localFiles);
+		}
+		return extracted.content;
+	}
+
+	private processTodoBlocks(content: string): string {
+		const todoRegex = /(^|\n)((?:>\s*)?)([ \t]*)([-*+])\s\[( |x|X)\]\s+([^\n]+)(?=\n|$)/g;
+		return String(content || '').replace(todoRegex, (_match, leading, quotePrefix, indent, _marker, state, body) => {
+			const placeholder = this.generatePlaceholder();
+			this.localFiles.push({
+				originalPath: `generated://todo/${placeholder}`,
+				fileName: 'todo.md',
+				placeholder,
+				isImage: false,
+				generatedType: 'todo',
+				generatedSource: String(body || ''),
+				generatedIndent: `${String(quotePrefix || '')}${String(indent || '')}`,
+				generatedMeta: {
+					checked: String(state || '').toLowerCase() === 'x',
+					inQuote: String(quotePrefix || '').includes('>')
+				}
+			});
+			return `${leading || ''}${quotePrefix || ''}${indent || ''}${placeholder}`;
+		});
+	}
+
+	private normalizeEquationContent(formula: string): string {
+		return String(formula || '')
+			.replace(/\r\n?/g, '\n')
+			.replace(/^\n+|\n+$/g, '')
+			.replace(/\\\\(?=[A-Za-z])/g, '\\')
+			.replace(/\\\\,/g, '\\,');
+	}
+
 	private processInlineDocTokens(content: string): string {
 		let next = String(content || '');
+
+		next = next.replace(/==([\s\S]+?)==/g, (_match, inner) => {
+			const placeholder = this.generatePlaceholder();
+			this.inlineDocTokens.push({
+				placeholder,
+				kind: 'text',
+				content: String(inner || ''),
+				style: {
+					background_color: 3
+				}
+			});
+			return placeholder;
+		});
 
 		next = next.replace(/\$\$([\s\S]+?)\$\$/g, (_match, formula) => {
 			const placeholder = this.generatePlaceholder();
 			this.inlineDocTokens.push({
 				placeholder,
 				kind: 'equation',
-				content: String(formula || '').trim(),
+				content: this.normalizeEquationContent(String(formula || '')),
 				displayMode: 'block'
 			});
 			return placeholder;
@@ -432,7 +443,7 @@ export class MarkdownProcessor {
 			this.inlineDocTokens.push({
 				placeholder,
 				kind: 'equation',
-				content: String(formula || '').trim(),
+				content: this.normalizeEquationContent(String(formula || '')),
 				displayMode: 'inline'
 			});
 			return placeholder;
@@ -674,6 +685,7 @@ export class MarkdownProcessor {
 		};
 
 		const finalContent = this.processCompleteWithContext(processedContent, context);
+		this.sortLocalFilesByPlaceholderOrder(finalContent);
 
 		return {
 			content: finalContent,
@@ -863,6 +875,7 @@ export class MarkdownProcessor {
 
 			// 处理子文档内容
 			const finalContent = this.processCompleteWithContext(processedContent, subContext);
+			this.sortLocalFilesByPlaceholderOrder(finalContent);
 
 			// 获取子文档自己的文件和行内 token
 			const subDocumentFiles = [...this.localFiles];
@@ -910,9 +923,39 @@ export class MarkdownProcessor {
 		processedContent = this.processLinks(processedContent); // 处理普通链接，确保特殊协议链接保持可点击
 		processedContent = this.processTags(processedContent);
 		processedContent = this.processHighlights(processedContent);
+		processedContent = this.processGeneratedListStructures(processedContent);
 		processedContent = this.cleanupWhitespace(processedContent);
 
 		return processedContent;
+	}
+
+	private sortLocalFilesByPlaceholderOrder(content: string): void {
+		const text = String(content || '');
+		if (!Array.isArray(this.localFiles) || this.localFiles.length <= 1 || !text) {
+			return;
+		}
+
+		this.localFiles.sort((a, b) => {
+			const indexA = text.indexOf(a.placeholder);
+			const indexB = text.indexOf(b.placeholder);
+			const hasA = indexA !== -1;
+			const hasB = indexB !== -1;
+
+			if (hasA && hasB && indexA !== indexB) {
+				return indexA - indexB;
+			}
+			if (hasA !== hasB) {
+				return hasA ? -1 : 1;
+			}
+
+			const sourceIndexA = typeof a.generatedMeta?.sourceIndex === 'number' ? a.generatedMeta.sourceIndex : Number.MAX_SAFE_INTEGER;
+			const sourceIndexB = typeof b.generatedMeta?.sourceIndex === 'number' ? b.generatedMeta.sourceIndex : Number.MAX_SAFE_INTEGER;
+			if (sourceIndexA !== sourceIndexB) {
+				return sourceIndexA - sourceIndexB;
+			}
+
+			return a.placeholder.localeCompare(b.placeholder);
+		});
 	}
 
 	/**

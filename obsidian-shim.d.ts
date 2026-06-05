@@ -12,6 +12,7 @@ declare module 'obsidian' {
 	export class Plugin {
 		app: any;
 		addCommand(command: any): void;
+		addRibbonIcon(icon: string, title: string, callback: (evt: MouseEvent) => any): any;
 		addSettingTab(tab: any): void;
 		registerEvent(eventRef: any): void;
 		registerObsidianProtocolHandler(action: string, handler: (params: Record<string, string>) => void): void;
