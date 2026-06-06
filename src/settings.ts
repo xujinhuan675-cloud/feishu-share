@@ -753,8 +753,9 @@ export class FeishuSettingTab extends PluginSettingTab {
 		this.renderBitableProfilesSettings(containerEl);
 	}
 
-	private createNewBitableProfile(): BitableSyncProfile {
+	private createNewBitableProfile(defaultTargetDir?: string): BitableSyncProfile {
 		const suffix = Date.now().toString(36);
+		const targetDir = String(defaultTargetDir || 'Tasks').trim() || 'Tasks';
 		return {
 			id: `profile-${suffix}`,
 			name: `新任务表 ${suffix.slice(-4)}`,
@@ -762,7 +763,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 			appToken: '',
 			tableId: '',
 			viewId: '',
-			targetDir: 'Tasks',
+			targetDir,
 			fileNameTemplate: '{{title}}',
 			fieldMapping: {},
 			statusMapping: {},
@@ -825,12 +826,13 @@ export class FeishuSettingTab extends PluginSettingTab {
 				});
 			})
 			.addButton(button => button
-				.setButtonText('新增')
+				.setButtonText('新增表')
 				.onClick(async () => {
-					const created = this.createNewBitableProfile();
+					const created = this.createNewBitableProfile(activeProfile?.targetDir || 'Tasks');
 					this.plugin.settings.bitableProfiles = [...profiles, created];
 					this.plugin.settings.activeBitableProfileId = created.id;
 					await this.plugin.saveSettings();
+					new Notice(`✅ 已新增任务表「${created.name}」`);
 					this.display();
 				}))
 			.addButton(button => button
@@ -894,6 +896,17 @@ export class FeishuSettingTab extends PluginSettingTab {
 					}
 					activeProfile.id = nextId;
 					this.plugin.settings.activeBitableProfileId = nextId;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('创建路径')
+			.setDesc('立即同步拉取的 Markdown 会创建到这个 Obsidian 文件夹；目录不存在时会自动创建。')
+			.addText(text => text
+				.setPlaceholder('例如：3-Task/IOTO研发')
+				.setValue(activeProfile.targetDir || '')
+				.onChange(async (value: string) => {
+					activeProfile.targetDir = value.trim();
 					await this.plugin.saveSettings();
 				}));
 
@@ -972,17 +985,6 @@ export class FeishuSettingTab extends PluginSettingTab {
 				.setValue(activeProfile.viewId || '')
 				.onChange(async (value: string) => {
 					activeProfile.viewId = normalizeBitableInput(value);
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('目标目录')
-			.setDesc('每条记录会映射为该目录中的一个 Markdown 文件。')
-			.addText(text => text
-				.setPlaceholder('例如：IOTO/Tasks')
-				.setValue(activeProfile.targetDir || '')
-				.onChange(async (value: string) => {
-					activeProfile.targetDir = value.trim();
 					await this.plugin.saveSettings();
 				}));
 

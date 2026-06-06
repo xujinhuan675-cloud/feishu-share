@@ -10996,8 +10996,9 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
     desc.setText("\u4EFB\u52A1\u8868\u4F7F\u7528\u72EC\u7ACB\u7684 appToken / tableId / viewId\uFF0C\u628A\u98DE\u4E66\u591A\u7EF4\u8868\u8BB0\u5F55\u540C\u6B65\u5230\u672C\u5730 Markdown\u3002\u6587\u6863\u7D22\u5F15\u8868\u914D\u7F6E\u4FDD\u7559\u5728\u201C\u6587\u6863\u540C\u6B65\u201D\u6807\u7B7E\u9875\u3002");
     this.renderBitableProfilesSettings(containerEl);
   }
-  createNewBitableProfile() {
+  createNewBitableProfile(defaultTargetDir) {
     const suffix = Date.now().toString(36);
+    const targetDir = String(defaultTargetDir || "Tasks").trim() || "Tasks";
     return {
       id: `profile-${suffix}`,
       name: `\u65B0\u4EFB\u52A1\u8868 ${suffix.slice(-4)}`,
@@ -11005,7 +11006,7 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       appToken: "",
       tableId: "",
       viewId: "",
-      targetDir: "Tasks",
+      targetDir,
       fileNameTemplate: "{{title}}",
       fieldMapping: {},
       statusMapping: {},
@@ -11062,11 +11063,12 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
         await this.plugin.saveSettings();
         this.display();
       });
-    }).addButton((button) => button.setButtonText("\u65B0\u589E").onClick(async () => {
-      const created = this.createNewBitableProfile();
+    }).addButton((button) => button.setButtonText("\u65B0\u589E\u8868").onClick(async () => {
+      const created = this.createNewBitableProfile((activeProfile == null ? void 0 : activeProfile.targetDir) || "Tasks");
       this.plugin.settings.bitableProfiles = [...profiles, created];
       this.plugin.settings.activeBitableProfileId = created.id;
       await this.plugin.saveSettings();
+      new import_obsidian6.Notice(`\u2705 \u5DF2\u65B0\u589E\u4EFB\u52A1\u8868\u300C${created.name}\u300D`);
       this.display();
     })).addButton((button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
       var _a2;
@@ -11106,6 +11108,10 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       }
       activeProfile.id = nextId;
       this.plugin.settings.activeBitableProfileId = nextId;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian6.Setting(containerEl).setName("\u521B\u5EFA\u8DEF\u5F84").setDesc("\u7ACB\u5373\u540C\u6B65\u62C9\u53D6\u7684 Markdown \u4F1A\u521B\u5EFA\u5230\u8FD9\u4E2A Obsidian \u6587\u4EF6\u5939\uFF1B\u76EE\u5F55\u4E0D\u5B58\u5728\u65F6\u4F1A\u81EA\u52A8\u521B\u5EFA\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1A3-Task/IOTO\u7814\u53D1").setValue(activeProfile.targetDir || "").onChange(async (value) => {
+      activeProfile.targetDir = value.trim();
       await this.plugin.saveSettings();
     }));
     const normalizeBitableInput = (input) => String(input || "").trim().replace(/^[\s"'“”‘’]+/, "").replace(/[\s"'“”‘’]+$/, "").trim();
@@ -11159,10 +11165,6 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
     }));
     new import_obsidian6.Setting(containerEl).setName("View ID").setDesc("\u53EF\u9009\uFF1B\u4EC5\u540C\u6B65\u6307\u5B9A\u89C6\u56FE\u4E2D\u7684\u8BB0\u5F55\u3002").addText((text) => text.setPlaceholder("vew...").setValue(activeProfile.viewId || "").onChange(async (value) => {
       activeProfile.viewId = normalizeBitableInput(value);
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian6.Setting(containerEl).setName("\u76EE\u6807\u76EE\u5F55").setDesc("\u6BCF\u6761\u8BB0\u5F55\u4F1A\u6620\u5C04\u4E3A\u8BE5\u76EE\u5F55\u4E2D\u7684\u4E00\u4E2A Markdown \u6587\u4EF6\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1AIOTO/Tasks").setValue(activeProfile.targetDir || "").onChange(async (value) => {
-      activeProfile.targetDir = value.trim();
       await this.plugin.saveSettings();
     }));
     new import_obsidian6.Setting(containerEl).setName("\u6587\u4EF6\u540D\u6A21\u677F").setDesc("\u652F\u6301 {{title}} \u548C {{recordId}}\u3002").addText((text) => text.setPlaceholder("{{title}}").setValue(activeProfile.fileNameTemplate || "{{title}}").onChange(async (value) => {
