@@ -6,7 +6,7 @@ import { FeishuSettingTab } from './src/settings';
 import { MarkdownProcessor } from './src/markdown-processor';
 import { Debug } from './src/debug';
 import { DocxBlocksToMarkdown } from './src/docx-blocks-to-markdown';
-import { SyncStateService } from './src/sync-state';
+import { isRemoteUpdatedAfterLocal, SyncStateService } from './src/sync-state';
 import { planSmartSyncBoth } from './src/smart-sync-plan';
 import { bitableFieldToFrontMatterValue, bitableFieldToPlainText, normalizeBitableWriteValue } from './src/bitable-fields';
 import {
@@ -34,6 +34,7 @@ type SyncExecutionOptions = {
 	interactive?: boolean;
 	silent?: boolean;
 	source?: 'manual' | 'scheduled';
+	forceRemoteOverwrite?: boolean;
 };
 
 type SyncErrorExtra = {
@@ -755,6 +756,10 @@ export default class FeishuPlugin extends Plugin {
 		return this.app.vault.getMarkdownFiles().find((file: TFile) => file.path === path) || null;
 	}
 
+	private shouldAutoPullRemoteVersion(file: TFile, remoteUpdatedAt?: number): boolean {
+		return isRemoteUpdatedAfterLocal(remoteUpdatedAt, file?.stat?.mtime);
+	}
+
 	private getBitableProfiles(): BitableSyncProfile[] {
 		this.settings.bitableProfiles = mergeDefaultBitableProfiles(this.settings.bitableProfiles);
 		return this.settings.bitableProfiles;
@@ -1167,6 +1172,10 @@ export default class FeishuPlugin extends Plugin {
 			});
 
 			if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+				if (this.shouldAutoPullRemoteVersion(file, remoteMeta?.updatedAt)) {
+					this.log(`${syncLabel} auto-preferred remote doc version for ${file.path}`);
+					return await this.updateFromFeishu(file, { ...options, forceRemoteOverwrite: true });
+				}
 				if (!interactive) {
 					this.syncState.upsert({
 						filePath: file.path,
@@ -1265,6 +1274,10 @@ export default class FeishuPlugin extends Plugin {
 			updatedAt: record.updatedAt
 		});
 		if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+			if (this.shouldAutoPullRemoteVersion(file, record.updatedAt)) {
+				this.log(`${syncLabel} auto-preferred remote bitable version for ${file.path}`);
+				return await this.pullFileFromBitable(file, { ...options, forceRemoteOverwrite: true });
+			}
 			if (!interactive) {
 				this.syncState.upsert({
 					filePath: file.path,
@@ -1348,6 +1361,10 @@ export default class FeishuPlugin extends Plugin {
 			updatedAt: record.updatedAt
 		});
 		if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+			if (this.shouldAutoPullRemoteVersion(file, record.updatedAt)) {
+				this.log(`${syncLabel} auto-preferred remote ${profile.name} version for ${file.path}`);
+				return await this.pullFileFromBitableProfile(file, profile, { ...options, forceRemoteOverwrite: true });
+			}
 			if (!interactive) {
 				await this.upsertProfileHistoryAndState({
 					file,
@@ -1509,6 +1526,10 @@ export default class FeishuPlugin extends Plugin {
 			updatedAt: record.updatedAt
 		});
 		if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+			if (this.shouldAutoPullRemoteVersion(file, record.updatedAt)) {
+				this.log(`smart sync auto-preferred remote ${profile.name} version for ${file.path}`);
+				return await this.pullFileFromBitableProfile(file, profile, { ...options, forceRemoteOverwrite: true });
+			}
 			await this.upsertProfileHistoryAndState({
 				file,
 				profile,
@@ -1601,9 +1622,12 @@ export default class FeishuPlugin extends Plugin {
 			hash: bitableRemoteHash,
 			updatedAt: bitableUpdatedAt
 		});
-		const pullBitableTarget = async (): Promise<boolean> => profile
-			? await this.pullFileFromBitableProfile(file, profile, options)
-			: await this.pullFileFromBitable(file, options);
+		const pullBitableTarget = async (forceRemoteOverwrite = false): Promise<boolean> => {
+			const nextOptions = forceRemoteOverwrite ? { ...options, forceRemoteOverwrite: true } : options;
+			return profile
+				? await this.pullFileFromBitableProfile(file, profile, nextOptions)
+				: await this.pullFileFromBitable(file, nextOptions);
+		};
 		const recordBothConflict = async (direction: SyncDirection, error: string): Promise<void> => {
 			this.syncState.upsert({
 				filePath: file.path,
@@ -1683,6 +1707,21 @@ export default class FeishuPlugin extends Plugin {
 			return false;
 		}
 		if (plan.action === 'choose-local-vs-feishu' || plan.action === 'choose-local-vs-bitable') {
+			const preferredRemoteUpdatedAt = plan.action === 'choose-local-vs-bitable'
+				? bitableUpdatedAt
+				: remoteMeta?.updatedAt;
+			if (this.shouldAutoPullRemoteVersion(file, preferredRemoteUpdatedAt)) {
+				if (plan.action === 'choose-local-vs-bitable') {
+					if (!await pullBitableTarget(true)) {
+						return false;
+					}
+				} else {
+					if (!await this.updateFromFeishu(file, { ...options, forceRemoteOverwrite: true })) {
+						return false;
+					}
+				}
+				return await this.syncBothTargetsFromLocal(file, options);
+			}
 			if (!interactive) {
 				await recordBothConflict(
 					plan.action === 'choose-local-vs-bitable' ? 'bitable' : 'obsidian-to-feishu',
@@ -1894,6 +1933,7 @@ export default class FeishuPlugin extends Plugin {
 	private async updateFromFeishu(file: TFile, options?: SyncExecutionOptions): Promise<boolean> {
 		const interactive = options?.interactive !== false;
 		const silent = options?.silent === true;
+		const forceRemoteOverwrite = options?.forceRemoteOverwrite === true;
 		const statusNotice = (silent || this.settings.suppressShareNotices) ? undefined : new Notice('⬇️ 正在从飞书更新...', 0);
 		try {
 			if (!file || file.extension !== 'md') {
@@ -1993,7 +2033,9 @@ export default class FeishuPlugin extends Plugin {
 
 			const localChange = this.syncState.getLocalChange(file.path, rawContent);
 			if (localChange.hasLocalChanges) {
-				if (!interactive) {
+				if (forceRemoteOverwrite) {
+					statusNotice?.setMessage('💾 正在写入本地文件...');
+				} else if (!interactive) {
 					this.syncState.upsert({
 						filePath: file.path,
 						title: file.basename,
@@ -3016,6 +3058,7 @@ export default class FeishuPlugin extends Plugin {
 	private async pullFileFromBitable(file: TFile, options?: SyncExecutionOptions): Promise<boolean> {
 		const interactive = options?.interactive !== false;
 		const silent = options?.silent === true;
+		const forceRemoteOverwrite = options?.forceRemoteOverwrite === true;
 		const statusNotice = (silent || this.settings.suppressShareNotices) ? undefined : new Notice('📊 正在从多维表格拉取...', 0);
 		try {
 			const profileContent = await this.app.vault.read(file);
@@ -3057,7 +3100,9 @@ export default class FeishuPlugin extends Plugin {
 
 			const localChange = this.syncState.getLocalChange(file.path, current);
 			if (localChange.hasLocalChanges && nextContent !== current) {
-				if (!interactive) {
+				if (forceRemoteOverwrite) {
+					statusNotice?.setMessage('💾 正在写入本地文件...');
+				} else if (!interactive) {
 					this.syncState.upsert({
 						filePath: file.path,
 						title: file.basename,
@@ -3152,6 +3197,7 @@ export default class FeishuPlugin extends Plugin {
 	private async pullFileFromBitableProfile(file: TFile, profile: BitableSyncProfile, options?: SyncExecutionOptions): Promise<boolean> {
 		const interactive = options?.interactive !== false;
 		const silent = options?.silent === true;
+		const forceRemoteOverwrite = options?.forceRemoteOverwrite === true;
 		const statusNotice = (silent || this.settings.suppressShareNotices) ? undefined : new Notice(`📊 正在从 ${profile.name} 拉取...`, 0);
 		try {
 			const current = await this.app.vault.read(file);
@@ -3179,7 +3225,9 @@ export default class FeishuPlugin extends Plugin {
 			const nextManaged = buildProfileManagedContent(nextContent, profile);
 			const localChange = this.syncState.getLocalChange(file.path, currentManaged);
 			if (localChange.hasLocalChanges && nextManaged !== currentManaged) {
-				if (!interactive) {
+				if (forceRemoteOverwrite) {
+					statusNotice?.setMessage('📝 正在写入本地文件...');
+				} else if (!interactive) {
 					await this.upsertProfileHistoryAndState({
 						file,
 						profile,

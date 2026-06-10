@@ -20,7 +20,7 @@ async function loadSyncStateService() {
 	return import(url);
 }
 
-const { SyncStateService } = await loadSyncStateService();
+const { SyncStateService, isRemoteUpdatedAfterLocal } = await loadSyncStateService();
 
 function createSettings(overrides = {}) {
 	return {
@@ -310,6 +310,13 @@ test('remote updatedAt evaluation uses the requested target-specific baseline', 
 	assert.equal(bitableEvaluation.remoteKind, 'bitable');
 	assert.equal(bitableEvaluation.lastRemoteUpdatedAt, 200);
 	assert.equal(bitableEvaluation.hasRemoteChanges, false);
+});
+
+test('remote timestamp helper only prefers clearly newer remote versions', () => {
+	assert.equal(isRemoteUpdatedAfterLocal(5000, 3000), true);
+	assert.equal(isRemoteUpdatedAfterLocal(3500, 3000, 1000), false);
+	assert.equal(isRemoteUpdatedAfterLocal(undefined, 3000), false);
+	assert.equal(isRemoteUpdatedAfterLocal(5000, undefined), false);
 });
 
 test('error snapshots can preserve split doc and Bitable observations without advancing baselines', () => {

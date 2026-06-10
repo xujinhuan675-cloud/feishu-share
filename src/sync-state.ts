@@ -62,6 +62,14 @@ export type SyncChangeEvaluation = LocalChangeInfo & {
 	lastRemoteUpdatedAt?: number;
 };
 
+export function isRemoteUpdatedAfterLocal(remoteUpdatedAt?: number, localUpdatedAt?: number, skewToleranceMs: number = 1000): boolean {
+	if (typeof remoteUpdatedAt !== 'number' || typeof localUpdatedAt !== 'number') {
+		return false;
+	}
+	const tolerance = Number.isFinite(skewToleranceMs) ? Math.max(0, Math.floor(skewToleranceMs)) : 1000;
+	return remoteUpdatedAt > (localUpdatedAt + tolerance);
+}
+
 export class SyncStateService {
 	private settings: FeishuSettings;
 

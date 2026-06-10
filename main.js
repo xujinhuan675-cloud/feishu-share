@@ -13127,6 +13127,13 @@ var DocxBlocksToMarkdown = class {
 };
 
 // src/sync-state.ts
+function isRemoteUpdatedAfterLocal(remoteUpdatedAt, localUpdatedAt, skewToleranceMs = 1e3) {
+  if (typeof remoteUpdatedAt !== "number" || typeof localUpdatedAt !== "number") {
+    return false;
+  }
+  const tolerance = Number.isFinite(skewToleranceMs) ? Math.max(0, Math.floor(skewToleranceMs)) : 1e3;
+  return remoteUpdatedAt > localUpdatedAt + tolerance;
+}
 var SyncStateService = class {
   constructor(settings) {
     this.settings = settings;
@@ -14118,6 +14125,10 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     }
     return this.app.vault.getMarkdownFiles().find((file) => file.path === path) || null;
   }
+  shouldAutoPullRemoteVersion(file, remoteUpdatedAt) {
+    var _a;
+    return isRemoteUpdatedAfterLocal(remoteUpdatedAt, (_a = file == null ? void 0 : file.stat) == null ? void 0 : _a.mtime);
+  }
   getBitableProfiles() {
     this.settings.bitableProfiles = mergeDefaultBitableProfiles(this.settings.bitableProfiles);
     return this.settings.bitableProfiles;
@@ -14476,6 +14487,10 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
         updatedAt: remoteMeta == null ? void 0 : remoteMeta.updatedAt
       });
       if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+        if (this.shouldAutoPullRemoteVersion(file, remoteMeta == null ? void 0 : remoteMeta.updatedAt)) {
+          this.log(`${syncLabel} auto-preferred remote doc version for ${file.path}`);
+          return await this.updateFromFeishu(file, { ...options, forceRemoteOverwrite: true });
+        }
         if (!interactive) {
           this.syncState.upsert({
             filePath: file.path,
@@ -14570,6 +14585,10 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       updatedAt: record.updatedAt
     });
     if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+      if (this.shouldAutoPullRemoteVersion(file, record.updatedAt)) {
+        this.log(`${syncLabel} auto-preferred remote bitable version for ${file.path}`);
+        return await this.pullFileFromBitable(file, { ...options, forceRemoteOverwrite: true });
+      }
       if (!interactive) {
         this.syncState.upsert({
           filePath: file.path,
@@ -14652,6 +14671,10 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       updatedAt: record.updatedAt
     });
     if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+      if (this.shouldAutoPullRemoteVersion(file, record.updatedAt)) {
+        this.log(`${syncLabel} auto-preferred remote ${profile.name} version for ${file.path}`);
+        return await this.pullFileFromBitableProfile(file, profile, { ...options, forceRemoteOverwrite: true });
+      }
       if (!interactive) {
         await this.upsertProfileHistoryAndState({
           file,
@@ -14804,6 +14827,10 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       updatedAt: record.updatedAt
     });
     if (evaluation.hasLocalChanges && evaluation.hasRemoteChanges) {
+      if (this.shouldAutoPullRemoteVersion(file, record.updatedAt)) {
+        this.log(`smart sync auto-preferred remote ${profile.name} version for ${file.path}`);
+        return await this.pullFileFromBitableProfile(file, profile, { ...options, forceRemoteOverwrite: true });
+      }
       await this.upsertProfileHistoryAndState({
         file,
         profile,
@@ -14889,7 +14916,10 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       hash: bitableRemoteHash,
       updatedAt: bitableUpdatedAt
     });
-    const pullBitableTarget = async () => profile ? await this.pullFileFromBitableProfile(file, profile, options) : await this.pullFileFromBitable(file, options);
+    const pullBitableTarget = async (forceRemoteOverwrite = false) => {
+      const nextOptions = forceRemoteOverwrite ? { ...options, forceRemoteOverwrite: true } : options;
+      return profile ? await this.pullFileFromBitableProfile(file, profile, nextOptions) : await this.pullFileFromBitable(file, nextOptions);
+    };
     const recordBothConflict = async (direction, error) => {
       this.syncState.upsert({
         filePath: file.path,
@@ -14968,6 +14998,19 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       return false;
     }
     if (plan.action === "choose-local-vs-feishu" || plan.action === "choose-local-vs-bitable") {
+      const preferredRemoteUpdatedAt = plan.action === "choose-local-vs-bitable" ? bitableUpdatedAt : remoteMeta == null ? void 0 : remoteMeta.updatedAt;
+      if (this.shouldAutoPullRemoteVersion(file, preferredRemoteUpdatedAt)) {
+        if (plan.action === "choose-local-vs-bitable") {
+          if (!await pullBitableTarget(true)) {
+            return false;
+          }
+        } else {
+          if (!await this.updateFromFeishu(file, { ...options, forceRemoteOverwrite: true })) {
+            return false;
+          }
+        }
+        return await this.syncBothTargetsFromLocal(file, options);
+      }
       if (!interactive) {
         await recordBothConflict(
           plan.action === "choose-local-vs-bitable" ? "bitable" : "obsidian-to-feishu",
@@ -15148,6 +15191,7 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     var _a;
     const interactive = (options == null ? void 0 : options.interactive) !== false;
     const silent = (options == null ? void 0 : options.silent) === true;
+    const forceRemoteOverwrite = (options == null ? void 0 : options.forceRemoteOverwrite) === true;
     const statusNotice = silent || this.settings.suppressShareNotices ? void 0 : new import_obsidian7.Notice("\u2B07\uFE0F \u6B63\u5728\u4ECE\u98DE\u4E66\u66F4\u65B0...", 0);
     try {
       if (!file || file.extension !== "md") {
@@ -15239,7 +15283,9 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       let md = DocxBlocksToMarkdown.convert(blocks, { app: this.app });
       const localChange = this.syncState.getLocalChange(file.path, rawContent);
       if (localChange.hasLocalChanges) {
-        if (!interactive) {
+        if (forceRemoteOverwrite) {
+          statusNotice == null ? void 0 : statusNotice.setMessage("\u{1F4BE} \u6B63\u5728\u5199\u5165\u672C\u5730\u6587\u4EF6...");
+        } else if (!interactive) {
           this.syncState.upsert({
             filePath: file.path,
             title: file.basename,
@@ -16162,6 +16208,7 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
   async pullFileFromBitable(file, options) {
     const interactive = (options == null ? void 0 : options.interactive) !== false;
     const silent = (options == null ? void 0 : options.silent) === true;
+    const forceRemoteOverwrite = (options == null ? void 0 : options.forceRemoteOverwrite) === true;
     const statusNotice = silent || this.settings.suppressShareNotices ? void 0 : new import_obsidian7.Notice("\u{1F4CA} \u6B63\u5728\u4ECE\u591A\u7EF4\u8868\u683C\u62C9\u53D6...", 0);
     try {
       const profileContent = await this.app.vault.read(file);
@@ -16202,7 +16249,9 @@ ${nextBody}`);
       }
       const localChange = this.syncState.getLocalChange(file.path, current);
       if (localChange.hasLocalChanges && nextContent !== current) {
-        if (!interactive) {
+        if (forceRemoteOverwrite) {
+          statusNotice == null ? void 0 : statusNotice.setMessage("\u{1F4BE} \u6B63\u5728\u5199\u5165\u672C\u5730\u6587\u4EF6...");
+        } else if (!interactive) {
           this.syncState.upsert({
             filePath: file.path,
             title: file.basename,
@@ -16293,6 +16342,7 @@ ${nextBody}`);
   async pullFileFromBitableProfile(file, profile, options) {
     const interactive = (options == null ? void 0 : options.interactive) !== false;
     const silent = (options == null ? void 0 : options.silent) === true;
+    const forceRemoteOverwrite = (options == null ? void 0 : options.forceRemoteOverwrite) === true;
     const statusNotice = silent || this.settings.suppressShareNotices ? void 0 : new import_obsidian7.Notice(`\u{1F4CA} \u6B63\u5728\u4ECE ${profile.name} \u62C9\u53D6...`, 0);
     try {
       const current = await this.app.vault.read(file);
@@ -16320,7 +16370,9 @@ ${nextBody}`);
       const nextManaged = buildProfileManagedContent(nextContent, profile);
       const localChange = this.syncState.getLocalChange(file.path, currentManaged);
       if (localChange.hasLocalChanges && nextManaged !== currentManaged) {
-        if (!interactive) {
+        if (forceRemoteOverwrite) {
+          statusNotice == null ? void 0 : statusNotice.setMessage("\u{1F4DD} \u6B63\u5728\u5199\u5165\u672C\u5730\u6587\u4EF6...");
+        } else if (!interactive) {
           await this.upsertProfileHistoryAndState({
             file,
             profile,
