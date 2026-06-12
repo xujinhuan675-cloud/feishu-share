@@ -162,8 +162,8 @@ export class FeishuSettingTab extends PluginSettingTab {
 	}
 
 	private renderBasicSettings(containerEl: HTMLElement): void {
-		// 应用配置部分
-		containerEl.createEl('h3', { text: '🔧 应用配置' });
+		// 应用配置与授权
+		containerEl.createEl('h3', { text: '🔐 授权与应用配置' });
 
 		// App ID
 		new Setting(containerEl)
@@ -203,79 +203,49 @@ export class FeishuSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					}));
 
-		// 授权部分
-		containerEl.createEl('h3', { text: '🔐 授权管理' });
-
-		// 当前授权状态
-		const authStatusEl = containerEl.createDiv('setting-item');
-		const authStatusInfo = authStatusEl.createDiv('setting-item-info');
-		authStatusInfo.createDiv('setting-item-name').setText('授权状态');
-		
-		const statusDesc = authStatusInfo.createDiv('setting-item-description');
-		if (this.plugin.settings.userInfo) {
-			const statusSpan = statusDesc.createEl('span', { text: '✅ 已授权' });
-			statusSpan.addClass('mod-success');
-			statusDesc.createEl('br');
-			const userInfoDiv = statusDesc.createDiv({ cls: 'setting-item-description' });
-			const userLabel = userInfoDiv.createEl('strong');
-			userLabel.textContent = '用户：';
-			userInfoDiv.appendText(this.plugin.settings.userInfo.name);
-			userInfoDiv.createEl('br');
-			const emailLabel = userInfoDiv.createEl('strong');
-			emailLabel.textContent = '邮箱：';
-			userInfoDiv.appendText(this.plugin.settings.userInfo.email);
-		} else {
-			const statusSpan = statusDesc.createEl('span', { text: '❌ 未授权' });
-			statusSpan.addClass('mod-warning');
-		}
-
-		// 自动授权按钮（推荐）
+		// 授权操作
+		const hasAccessToken = !!String(this.plugin.settings.accessToken || '').trim();
+		const hasRefreshToken = !!String(this.plugin.settings.refreshToken || '').trim();
+		const isAuthorized = hasAccessToken && hasRefreshToken;
 		new Setting(containerEl)
-			.setName('🚀 一键授权（推荐）')
-			.setDesc('自动打开浏览器完成授权，通过云端回调自动返回授权结果，无需手动操作')
+			.setName('授权')
+			.setDesc(isAuthorized ? '已连接' : '未连接')
 			.addButton(button => {
 				button
-					.setButtonText('🚀 一键授权')
+					.setButtonText('一键授权')
 					.setCta()
 					.onClick(() => {
 						this.startAutoAuth();
 					});
-			});
-
-		// 手动授权按钮（备用）
-		new Setting(containerEl)
-			.setName('📝 手动授权（备用）')
-			.setDesc('如果一键授权遇到问题，可以使用传统的手动复制粘贴授权方式')
+			})
 			.addButton(button => {
 				button
 					.setButtonText('手动授权')
 					.onClick(() => {
 						this.startManualAuth();
 					});
+			})
+			.addButton(button => {
+				if (!(this.plugin.settings.userInfo || this.plugin.settings.accessToken || this.plugin.settings.refreshToken)) {
+					button.buttonEl.style.display = 'none';
+					return;
+				}
+				button
+					.setButtonText('清除授权')
+					.setWarning()
+					.onClick(async () => {
+						this.plugin.settings.accessToken = '';
+						this.plugin.settings.refreshToken = '';
+						this.plugin.settings.accessTokenExpiresAt = 0;
+						this.plugin.settings.refreshTokenExpiresAt = 0;
+						this.plugin.settings.lastTokenRefreshAt = 0;
+						this.plugin.settings.userInfo = null;
+						await this.plugin.saveSettings();
+						this.plugin.feishuApi.updateSettings(this.plugin.settings);
+						new Notice('✅ 授权信息已清除');
+						this.display(); // 刷新界面
+					});
 			});
-
-		// 清除授权
-		if (this.plugin.settings.userInfo) {
-			new Setting(containerEl)
-				.setName('清除授权')
-				.setDesc('清除当前的授权信息')
-				.addButton(button => {
-					button
-						.setButtonText('🗑️ 清除授权')
-						.setWarning()
-						.onClick(async () => {
-							this.plugin.settings.accessToken = '';
-							this.plugin.settings.refreshToken = '';
-							this.plugin.settings.userInfo = null;
-							await this.plugin.saveSettings();
-							this.plugin.feishuApi.updateSettings(this.plugin.settings);
-							new Notice('✅ 授权信息已清除');
-							this.display(); // 刷新界面
-						});
-				});
-
-
-		}
 
 		// 分享目标设置部分
 		containerEl.createEl('h3', { text: '🎯 分享目标设置' });

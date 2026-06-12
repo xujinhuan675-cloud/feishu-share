@@ -122,6 +122,9 @@ export interface FeishuSettings {
 	callbackUrl: string;
 	accessToken: string;
 	refreshToken: string;
+	accessTokenExpiresAt?: number;
+	refreshTokenExpiresAt?: number;
+	lastTokenRefreshAt?: number;
 	userInfo: FeishuUserInfo | null;
 
 	// 新增：目标类型选择

@@ -1156,12 +1156,19 @@ var FEISHU_CONFIG = {
   // 用户信息
   USER_INFO_URL: "https://open.feishu.cn/open-apis/authen/v1/user_info"
 };
+var LEGACY_CALLBACK_URL = "https://md2feishu.xinqi.life/oauth-callback";
+var DEFAULT_CALLBACK_URL = "https://xujinhuan675-cloud.github.io/feishu-share/";
+var ACCESS_TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1e3;
+var ACCESS_TOKEN_VALIDATION_TTL_MS = 15 * 60 * 1e3;
 var DEFAULT_SETTINGS = {
   appId: "",
   appSecret: "",
-  callbackUrl: "https://xujinhuan675-cloud.github.io/feishu-share/",
+  callbackUrl: DEFAULT_CALLBACK_URL,
   accessToken: "",
   refreshToken: "",
+  accessTokenExpiresAt: 0,
+  refreshTokenExpiresAt: 0,
+  lastTokenRefreshAt: 0,
   userInfo: null,
   // 新增：目标类型默认设置（默认知识库）
   targetType: "wiki",
@@ -3681,9 +3688,11 @@ var ImageProcessingService = class {
   }
 };
 var FeishuApiService = class {
-  // 防止并发刷新
   constructor(settings, app) {
     this.refreshPromise = null;
+    // 防止并发刷新
+    this.persistSettings = null;
+    this.lastTokenValidationAt = 0;
     // 文档ID缓存，避免重复提取
     this.documentIdCache = /* @__PURE__ */ new Map();
     this.settings = settings;
@@ -3691,6 +3700,9 @@ var FeishuApiService = class {
     this.markdownProcessor = new MarkdownProcessor(app);
     this.rateLimitController = new RateLimitController();
     this.imageProcessingService = new ImageProcessingService(app, settings, this);
+  }
+  setSettingsPersistence(persistSettings) {
+    this.persistSettings = persistSettings;
   }
   extractTextFromRichTextElements(elements) {
     if (!elements || !Array.isArray(elements)) {
@@ -4008,6 +4020,87 @@ var FeishuApiService = class {
     this.settings = settings;
     this.imageProcessingService.updateSettings(settings);
   }
+  async persistSettingsIfNeeded() {
+    if (!this.persistSettings) {
+      return;
+    }
+    await this.persistSettings();
+  }
+  decodeJwtExpiration(token) {
+    try {
+      const parts = String(token || "").split(".");
+      if (parts.length < 2) {
+        return 0;
+      }
+      const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+      const decoded = atob(padded);
+      const payload = JSON.parse(decoded);
+      const exp = Number((payload == null ? void 0 : payload.exp) || 0);
+      return Number.isFinite(exp) && exp > 0 ? exp * 1e3 : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+  updateTokenMetadata(accessToken, refreshToken, expiresInSeconds) {
+    const now = Date.now();
+    const accessTokenExpiresAt = this.decodeJwtExpiration(accessToken) || (expiresInSeconds && expiresInSeconds > 0 ? now + expiresInSeconds * 1e3 : 0);
+    const refreshTokenExpiresAt = this.decodeJwtExpiration(refreshToken);
+    this.settings.accessToken = accessToken;
+    this.settings.refreshToken = refreshToken;
+    this.settings.accessTokenExpiresAt = accessTokenExpiresAt;
+    this.settings.refreshTokenExpiresAt = refreshTokenExpiresAt;
+    this.settings.lastTokenRefreshAt = now;
+  }
+  clearTokenMetadata(options) {
+    const clearRefreshToken = !!(options == null ? void 0 : options.clearRefreshToken);
+    this.settings.accessToken = "";
+    this.settings.accessTokenExpiresAt = 0;
+    this.settings.lastTokenRefreshAt = 0;
+    if (clearRefreshToken) {
+      this.settings.refreshToken = "";
+      this.settings.refreshTokenExpiresAt = 0;
+    }
+  }
+  shouldRefreshAccessToken() {
+    const expiresAt = Number(this.settings.accessTokenExpiresAt || 0);
+    if (!this.settings.accessToken) {
+      return false;
+    }
+    if (!expiresAt) {
+      return false;
+    }
+    return expiresAt <= Date.now() + ACCESS_TOKEN_REFRESH_BUFFER_MS;
+  }
+  isRefreshTokenExpired() {
+    const refreshToken = String(this.settings.refreshToken || "").trim();
+    if (!refreshToken) {
+      return true;
+    }
+    const expiresAt = Number(this.settings.refreshTokenExpiresAt || 0);
+    if (!expiresAt) {
+      return false;
+    }
+    return expiresAt <= Date.now() + 60 * 1e3;
+  }
+  async maintainLongLivedAuth(options) {
+    if (!this.settings.accessToken) {
+      return false;
+    }
+    const reason = (options == null ? void 0 : options.reason) || "before_request";
+    if (this.shouldRefreshAccessToken()) {
+      if (this.isRefreshTokenExpired()) {
+        Debug.warn(`\u26A0\uFE0F Skip token refresh during ${reason}: refresh_token unavailable or expired`);
+        return false;
+      }
+      Debug.log(`\u{1F504} Proactively refreshing access token during ${reason}`);
+      return await this.refreshAccessToken();
+    }
+    if (options == null ? void 0 : options.forceValidate) {
+      return await this.ensureValidToken();
+    }
+    return true;
+  }
   async downloadMediaFromFeishu(mediaToken) {
     const token = String(mediaToken || "").trim();
     if (!token) {
@@ -4107,7 +4200,7 @@ var FeishuApiService = class {
    * 使用授权码换取访问令牌（v2 API）
    */
   async exchangeCodeForToken(code) {
-    var _a, _b;
+    var _a, _b, _c;
     try {
       const requestBody = {
         grant_type: "authorization_code",
@@ -4149,9 +4242,10 @@ var FeishuApiService = class {
       if (data.code === 0) {
         const accessToken = data.access_token || ((_a = data.data) == null ? void 0 : _a.access_token);
         const refreshToken = data.refresh_token || ((_b = data.data) == null ? void 0 : _b.refresh_token);
+        const expiresIn = data.expires_in || ((_c = data.data) == null ? void 0 : _c.expires_in);
         if (accessToken) {
-          this.settings.accessToken = accessToken;
-          this.settings.refreshToken = refreshToken || "";
+          this.updateTokenMetadata(accessToken, refreshToken || "", expiresIn);
+          await this.persistSettingsIfNeeded();
           return { success: true };
         } else {
           Debug.error("\u274C No access token in response:", data);
@@ -5386,7 +5480,7 @@ ${errorMessage}
    * 实际执行刷新的方法
    */
   async doRefreshAccessToken() {
-    var _a, _b;
+    var _a, _b, _c;
     try {
       if (!this.settings.refreshToken) {
         Debug.error("\u274C No refresh token available");
@@ -5413,9 +5507,11 @@ ${errorMessage}
       if (data.code === 0) {
         const accessToken = data.access_token || ((_a = data.data) == null ? void 0 : _a.access_token);
         const refreshToken = data.refresh_token || ((_b = data.data) == null ? void 0 : _b.refresh_token);
+        const expiresIn = data.expires_in || ((_c = data.data) == null ? void 0 : _c.expires_in);
         if (accessToken) {
-          this.settings.accessToken = accessToken;
-          this.settings.refreshToken = refreshToken || "";
+          this.updateTokenMetadata(accessToken, refreshToken || "", expiresIn);
+          await this.persistSettingsIfNeeded();
+          this.lastTokenValidationAt = Date.now();
           Debug.log("\u2705 Token refresh successful, tokens updated");
           return true;
         } else {
@@ -5433,7 +5529,8 @@ ${errorMessage}
       if (error.message && error.message.includes("Request failed, status 400")) {
         Debug.error("\u274C 400 Bad Request - Refresh token is invalid or expired");
         Debug.error("\u{1F4A1} Solution: Clear authorization in settings and re-authorize");
-        this.settings.refreshToken = "";
+        this.clearTokenMetadata({ clearRefreshToken: true });
+        await this.persistSettingsIfNeeded();
         Debug.log("\u{1F9F9} Cleared invalid refresh token");
       }
       return false;
@@ -5452,6 +5549,19 @@ ${errorMessage}
     if (!this.settings.accessToken) {
       return false;
     }
+    if (this.shouldRefreshAccessToken()) {
+      if (this.isRefreshTokenExpired()) {
+        Debug.warn("\u26A0\uFE0F access_token \u5373\u5C06\u8FC7\u671F\uFF0C\u4F46 refresh_token \u5DF2\u4E0D\u53EF\u7528");
+      } else {
+        const refreshSuccess = await this.refreshAccessToken();
+        if (refreshSuccess) {
+          return true;
+        }
+      }
+    }
+    if (this.lastTokenValidationAt && Date.now() - this.lastTokenValidationAt < ACCESS_TOKEN_VALIDATION_TTL_MS) {
+      return true;
+    }
     try {
       const response = await (0, import_obsidian2.requestUrl)({
         url: FEISHU_CONFIG.USER_INFO_URL,
@@ -5462,6 +5572,7 @@ ${errorMessage}
       });
       const data = response.json || JSON.parse(response.text);
       if (data.code === 0) {
+        this.lastTokenValidationAt = Date.now();
         return true;
       } else if (this.isTokenExpiredError(data.code)) {
         Debug.log(`\u26A0\uFE0F Token expired (code: ${data.code}), attempting refresh`);
@@ -5486,6 +5597,13 @@ ${errorMessage}
       }
       return await this.triggerReauth("\u9700\u8981\u91CD\u65B0\u6388\u6743", statusNotice);
     }
+    if (this.shouldRefreshAccessToken() && !this.isRefreshTokenExpired()) {
+      const refreshSuccess = await this.refreshAccessToken();
+      if (refreshSuccess) {
+        Debug.log("\u2705 Proactive token refresh succeeded");
+        return true;
+      }
+    }
     try {
       const response = await (0, import_obsidian2.requestUrl)({
         url: FEISHU_CONFIG.USER_INFO_URL,
@@ -5496,6 +5614,7 @@ ${errorMessage}
       });
       const data = response.json || JSON.parse(response.text);
       if (data.code === 0) {
+        this.lastTokenValidationAt = Date.now();
         Debug.log("\u2705 Token is valid");
         return true;
       } else if (this.isTokenExpiredError(data.code)) {
@@ -10682,7 +10801,7 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
     this.renderHistoryPanel(historyPanel);
   }
   renderBasicSettings(containerEl) {
-    containerEl.createEl("h3", { text: "\u{1F527} \u5E94\u7528\u914D\u7F6E" });
+    containerEl.createEl("h3", { text: "\u{1F510} \u6388\u6743\u4E0E\u5E94\u7528\u914D\u7F6E" });
     new import_obsidian6.Setting(containerEl).setName("App ID").setDesc("\u98DE\u4E66\u5E94\u7528\u7684 App ID").addText((text) => text.setPlaceholder("\u8F93\u5165\u98DE\u4E66\u5E94\u7528\u7684 App ID").setValue(this.plugin.settings.appId).onChange(async (value) => {
       this.plugin.settings.appId = value.trim();
       await this.plugin.saveSettings();
@@ -10698,50 +10817,35 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       this.plugin.settings.callbackUrl = value.trim();
       await this.plugin.saveSettings();
     }));
-    containerEl.createEl("h3", { text: "\u{1F510} \u6388\u6743\u7BA1\u7406" });
-    const authStatusEl = containerEl.createDiv("setting-item");
-    const authStatusInfo = authStatusEl.createDiv("setting-item-info");
-    authStatusInfo.createDiv("setting-item-name").setText("\u6388\u6743\u72B6\u6001");
-    const statusDesc = authStatusInfo.createDiv("setting-item-description");
-    if (this.plugin.settings.userInfo) {
-      const statusSpan = statusDesc.createEl("span", { text: "\u2705 \u5DF2\u6388\u6743" });
-      statusSpan.addClass("mod-success");
-      statusDesc.createEl("br");
-      const userInfoDiv = statusDesc.createDiv({ cls: "setting-item-description" });
-      const userLabel = userInfoDiv.createEl("strong");
-      userLabel.textContent = "\u7528\u6237\uFF1A";
-      userInfoDiv.appendText(this.plugin.settings.userInfo.name);
-      userInfoDiv.createEl("br");
-      const emailLabel = userInfoDiv.createEl("strong");
-      emailLabel.textContent = "\u90AE\u7BB1\uFF1A";
-      userInfoDiv.appendText(this.plugin.settings.userInfo.email);
-    } else {
-      const statusSpan = statusDesc.createEl("span", { text: "\u274C \u672A\u6388\u6743" });
-      statusSpan.addClass("mod-warning");
-    }
-    new import_obsidian6.Setting(containerEl).setName("\u{1F680} \u4E00\u952E\u6388\u6743\uFF08\u63A8\u8350\uFF09").setDesc("\u81EA\u52A8\u6253\u5F00\u6D4F\u89C8\u5668\u5B8C\u6210\u6388\u6743\uFF0C\u901A\u8FC7\u4E91\u7AEF\u56DE\u8C03\u81EA\u52A8\u8FD4\u56DE\u6388\u6743\u7ED3\u679C\uFF0C\u65E0\u9700\u624B\u52A8\u64CD\u4F5C").addButton((button) => {
-      button.setButtonText("\u{1F680} \u4E00\u952E\u6388\u6743").setCta().onClick(() => {
+    const hasAccessToken = !!String(this.plugin.settings.accessToken || "").trim();
+    const hasRefreshToken = !!String(this.plugin.settings.refreshToken || "").trim();
+    const isAuthorized = hasAccessToken && hasRefreshToken;
+    new import_obsidian6.Setting(containerEl).setName("\u6388\u6743").setDesc(isAuthorized ? "\u5DF2\u8FDE\u63A5" : "\u672A\u8FDE\u63A5").addButton((button) => {
+      button.setButtonText("\u4E00\u952E\u6388\u6743").setCta().onClick(() => {
         this.startAutoAuth();
       });
-    });
-    new import_obsidian6.Setting(containerEl).setName("\u{1F4DD} \u624B\u52A8\u6388\u6743\uFF08\u5907\u7528\uFF09").setDesc("\u5982\u679C\u4E00\u952E\u6388\u6743\u9047\u5230\u95EE\u9898\uFF0C\u53EF\u4EE5\u4F7F\u7528\u4F20\u7EDF\u7684\u624B\u52A8\u590D\u5236\u7C98\u8D34\u6388\u6743\u65B9\u5F0F").addButton((button) => {
+    }).addButton((button) => {
       button.setButtonText("\u624B\u52A8\u6388\u6743").onClick(() => {
         this.startManualAuth();
       });
-    });
-    if (this.plugin.settings.userInfo) {
-      new import_obsidian6.Setting(containerEl).setName("\u6E05\u9664\u6388\u6743").setDesc("\u6E05\u9664\u5F53\u524D\u7684\u6388\u6743\u4FE1\u606F").addButton((button) => {
-        button.setButtonText("\u{1F5D1}\uFE0F \u6E05\u9664\u6388\u6743").setWarning().onClick(async () => {
-          this.plugin.settings.accessToken = "";
-          this.plugin.settings.refreshToken = "";
-          this.plugin.settings.userInfo = null;
-          await this.plugin.saveSettings();
-          this.plugin.feishuApi.updateSettings(this.plugin.settings);
-          new import_obsidian6.Notice("\u2705 \u6388\u6743\u4FE1\u606F\u5DF2\u6E05\u9664");
-          this.display();
-        });
+    }).addButton((button) => {
+      if (!(this.plugin.settings.userInfo || this.plugin.settings.accessToken || this.plugin.settings.refreshToken)) {
+        button.buttonEl.style.display = "none";
+        return;
+      }
+      button.setButtonText("\u6E05\u9664\u6388\u6743").setWarning().onClick(async () => {
+        this.plugin.settings.accessToken = "";
+        this.plugin.settings.refreshToken = "";
+        this.plugin.settings.accessTokenExpiresAt = 0;
+        this.plugin.settings.refreshTokenExpiresAt = 0;
+        this.plugin.settings.lastTokenRefreshAt = 0;
+        this.plugin.settings.userInfo = null;
+        await this.plugin.saveSettings();
+        this.plugin.feishuApi.updateSettings(this.plugin.settings);
+        new import_obsidian6.Notice("\u2705 \u6388\u6743\u4FE1\u606F\u5DF2\u6E05\u9664");
+        this.display();
       });
-    }
+    });
     containerEl.createEl("h3", { text: "\u{1F3AF} \u5206\u4EAB\u76EE\u6807\u8BBE\u7F6E" });
     new import_obsidian6.Setting(containerEl).setName("\u5206\u4EAB\u76EE\u6807").setDesc("\u9009\u62E9\u6587\u6863\u5206\u4EAB\u7684\u76EE\u6807\u4F4D\u7F6E").addDropdown((dropdown) => {
       dropdown.addOption("drive", "\u4E91\u7A7A\u95F4").addOption("wiki", "\u77E5\u8BC6\u5E93").setValue(this.plugin.settings.targetType || "drive").onChange(async (value) => {
@@ -13501,6 +13605,7 @@ function buildPlan(action, reason, convergeAfterPull = false) {
 var FeishuPlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
+    this.authMaintenanceIntervalId = null;
     this.scheduledSyncIntervalId = null;
     this.scheduledSyncStartupTimeoutId = null;
     this.scheduledSyncInProgress = false;
@@ -13511,6 +13616,9 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
   async onload() {
     await this.loadSettings();
     this.feishuApi = new FeishuApiService(this.settings, this.app);
+    this.feishuApi.setSettingsPersistence(async () => {
+      await this.saveSettings();
+    });
     this.markdownProcessor = new MarkdownProcessor(this.app);
     this.syncState = new SyncStateService(this.settings);
     this.syncState.migrateFromHistory();
@@ -13531,9 +13639,33 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     this.registerCommands();
     this.registerMenus();
     this.configureScheduledSync();
+    void this.startAuthMaintenance();
   }
   onunload() {
+    this.clearAuthMaintenanceTimer();
     this.clearScheduledSyncTimers();
+  }
+  clearAuthMaintenanceTimer() {
+    if (this.authMaintenanceIntervalId !== null) {
+      window.clearInterval(this.authMaintenanceIntervalId);
+      this.authMaintenanceIntervalId = null;
+    }
+  }
+  async startAuthMaintenance() {
+    this.clearAuthMaintenanceTimer();
+    if (!this.settings.accessToken || !this.settings.refreshToken) {
+      return;
+    }
+    try {
+      await this.feishuApi.maintainLongLivedAuth({ reason: "startup", forceValidate: true });
+    } catch (error) {
+      Debug.warn("\u26A0\uFE0F Startup auth maintenance failed:", error);
+    }
+    this.authMaintenanceIntervalId = window.setInterval(() => {
+      void this.feishuApi.maintainLongLivedAuth({ reason: "interval" }).catch((error) => {
+        Debug.warn("\u26A0\uFE0F Periodic auth maintenance failed:", error);
+      });
+    }, 30 * 60 * 1e3);
   }
   registerFileMappingEvents() {
     const vault = this.app.vault;
@@ -15839,6 +15971,11 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     var _a;
     const loadedData = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
+    const currentCallbackUrl = String(this.settings.callbackUrl || "").trim();
+    if (!currentCallbackUrl || currentCallbackUrl === LEGACY_CALLBACK_URL) {
+      this.settings.callbackUrl = DEFAULT_CALLBACK_URL;
+      await this.saveData(this.settings);
+    }
     this.settings.bitableProfiles = mergeDefaultBitableProfiles(this.settings.bitableProfiles);
     if (!this.settings.activeBitableProfileId || !this.settings.bitableProfiles.some((profile) => profile.id === this.settings.activeBitableProfileId)) {
       this.settings.activeBitableProfileId = ((_a = this.settings.bitableProfiles[0]) == null ? void 0 : _a.id) || "";

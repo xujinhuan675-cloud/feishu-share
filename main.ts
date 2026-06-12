@@ -1,6 +1,6 @@
 import { Plugin, Notice, TFile, Menu, Editor, MarkdownView, Modal, normalizePath } from 'obsidian';
 import { BitableSyncProfile, FeishuSettings, ShareResult, SyncDirection, SyncTarget, ScheduledSyncScope, ScheduledSyncReport } from './src/types';
-import { DEFAULT_SETTINGS, SUCCESS_NOTICE_TEMPLATE } from './src/constants';
+import { DEFAULT_CALLBACK_URL, DEFAULT_SETTINGS, LEGACY_CALLBACK_URL, SUCCESS_NOTICE_TEMPLATE } from './src/constants';
 import { FeishuApiService } from './src/feishu-api';
 import { FeishuSettingTab } from './src/settings';
 import { MarkdownProcessor } from './src/markdown-processor';
@@ -55,6 +55,7 @@ export default class FeishuPlugin extends Plugin {
 	feishuApi: FeishuApiService;
 	markdownProcessor: MarkdownProcessor;
 	syncState: SyncStateService;
+	private authMaintenanceIntervalId: number | null = null;
 	private scheduledSyncIntervalId: number | null = null;
 	private scheduledSyncStartupTimeoutId: number | null = null;
 	private scheduledSyncInProgress: boolean = false;
@@ -68,6 +69,9 @@ export default class FeishuPlugin extends Plugin {
 
 		// 初始化服务
 		this.feishuApi = new FeishuApiService(this.settings, this.app);
+		this.feishuApi.setSettingsPersistence(async () => {
+			await this.saveSettings();
+		});
 		this.markdownProcessor = new MarkdownProcessor(this.app);
 		this.syncState = new SyncStateService(this.settings);
 		this.syncState.migrateFromHistory();
@@ -96,10 +100,38 @@ export default class FeishuPlugin extends Plugin {
 		this.registerCommands();
 		this.registerMenus();
 		this.configureScheduledSync();
+		void this.startAuthMaintenance();
 	}
 
 	onunload(): void {
+		this.clearAuthMaintenanceTimer();
 		this.clearScheduledSyncTimers();
+	}
+
+	private clearAuthMaintenanceTimer(): void {
+		if (this.authMaintenanceIntervalId !== null) {
+			window.clearInterval(this.authMaintenanceIntervalId);
+			this.authMaintenanceIntervalId = null;
+		}
+	}
+
+	private async startAuthMaintenance(): Promise<void> {
+		this.clearAuthMaintenanceTimer();
+		if (!this.settings.accessToken || !this.settings.refreshToken) {
+			return;
+		}
+
+		try {
+			await this.feishuApi.maintainLongLivedAuth({ reason: 'startup', forceValidate: true });
+		} catch (error) {
+			Debug.warn('⚠️ Startup auth maintenance failed:', error);
+		}
+
+		this.authMaintenanceIntervalId = window.setInterval(() => {
+			void this.feishuApi.maintainLongLivedAuth({ reason: 'interval' }).catch((error) => {
+				Debug.warn('⚠️ Periodic auth maintenance failed:', error);
+			});
+		}, 30 * 60 * 1000);
 	}
 
 	private registerFileMappingEvents(): void {
@@ -2617,6 +2649,11 @@ export default class FeishuPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const loadedData = await this.loadData();
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
+		const currentCallbackUrl = String(this.settings.callbackUrl || '').trim();
+		if (!currentCallbackUrl || currentCallbackUrl === LEGACY_CALLBACK_URL) {
+			this.settings.callbackUrl = DEFAULT_CALLBACK_URL;
+			await this.saveData(this.settings);
+		}
 		this.settings.bitableProfiles = mergeDefaultBitableProfiles(this.settings.bitableProfiles);
 		if (!this.settings.activeBitableProfileId || !this.settings.bitableProfiles.some((profile) => profile.id === this.settings.activeBitableProfileId)) {
 			this.settings.activeBitableProfileId = this.settings.bitableProfiles[0]?.id || '';

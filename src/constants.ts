@@ -27,12 +27,20 @@ export const FEISHU_CONFIG = {
 	USER_INFO_URL: 'https://open.feishu.cn/open-apis/authen/v1/user_info',
 };
 
+export const LEGACY_CALLBACK_URL = 'https://md2feishu.xinqi.life/oauth-callback';
+export const DEFAULT_CALLBACK_URL = 'https://xujinhuan675-cloud.github.io/feishu-share/';
+export const ACCESS_TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
+export const ACCESS_TOKEN_VALIDATION_TTL_MS = 15 * 60 * 1000;
+
 export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	appId: '',
 	appSecret: '',
-	callbackUrl: 'https://xujinhuan675-cloud.github.io/feishu-share/',
+	callbackUrl: DEFAULT_CALLBACK_URL,
 	accessToken: '',
 	refreshToken: '',
+	accessTokenExpiresAt: 0,
+	refreshTokenExpiresAt: 0,
+	lastTokenRefreshAt: 0,
 	userInfo: null,
 
 	// 新增：目标类型默认设置（默认知识库）

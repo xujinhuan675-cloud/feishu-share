@@ -21,7 +21,12 @@ import {
 	WikiNodeListResponse,
 	MoveDocToWikiResponse
 } from './types';
-import { FEISHU_CONFIG, FEISHU_ERROR_MESSAGES } from './constants';
+import {
+	ACCESS_TOKEN_REFRESH_BUFFER_MS,
+	ACCESS_TOKEN_VALIDATION_TTL_MS,
+	FEISHU_CONFIG,
+	FEISHU_ERROR_MESSAGES
+} from './constants';
 import { Debug } from './debug';
 import { MarkdownProcessor } from './markdown-processor';
 import { buildDescendantPayloadFromConvertedData, collectDocxUploadCompatibilityWarnings } from './docx-convert';
@@ -530,6 +535,8 @@ export class FeishuApiService {
 	private rateLimitController: RateLimitController;
 	private imageProcessingService: ImageProcessingService;
 	private refreshPromise: Promise<boolean> | null = null; // 防止并发刷新
+	private persistSettings: (() => Promise<void>) | null = null;
+	private lastTokenValidationAt: number = 0;
 
 	constructor(settings: FeishuSettings, app: App) {
 		this.settings = settings;
@@ -537,6 +544,10 @@ export class FeishuApiService {
 		this.markdownProcessor = new MarkdownProcessor(app);
 		this.rateLimitController = new RateLimitController();
 		this.imageProcessingService = new ImageProcessingService(app, settings, this);
+	}
+
+	setSettingsPersistence(persistSettings: () => Promise<void>): void {
+		this.persistSettings = persistSettings;
 	}
 
 	private extractTextFromRichTextElements(elements: any[]): string {
@@ -892,6 +903,99 @@ export class FeishuApiService {
 		this.imageProcessingService.updateSettings(settings);
 	}
 
+	private async persistSettingsIfNeeded(): Promise<void> {
+		if (!this.persistSettings) {
+			return;
+		}
+		await this.persistSettings();
+	}
+
+	private decodeJwtExpiration(token: string): number {
+		try {
+			const parts = String(token || '').split('.');
+			if (parts.length < 2) {
+				return 0;
+			}
+			const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+			const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+			const decoded = atob(padded);
+			const payload = JSON.parse(decoded);
+			const exp = Number(payload?.exp || 0);
+			return Number.isFinite(exp) && exp > 0 ? exp * 1000 : 0;
+		} catch {
+			return 0;
+		}
+	}
+
+	private updateTokenMetadata(accessToken: string, refreshToken: string, expiresInSeconds?: number): void {
+		const now = Date.now();
+		const accessTokenExpiresAt =
+			this.decodeJwtExpiration(accessToken) ||
+			(expiresInSeconds && expiresInSeconds > 0 ? now + expiresInSeconds * 1000 : 0);
+		const refreshTokenExpiresAt = this.decodeJwtExpiration(refreshToken);
+		this.settings.accessToken = accessToken;
+		this.settings.refreshToken = refreshToken;
+		this.settings.accessTokenExpiresAt = accessTokenExpiresAt;
+		this.settings.refreshTokenExpiresAt = refreshTokenExpiresAt;
+		this.settings.lastTokenRefreshAt = now;
+	}
+
+	private clearTokenMetadata(options?: { clearRefreshToken?: boolean }): void {
+		const clearRefreshToken = !!options?.clearRefreshToken;
+		this.settings.accessToken = '';
+		this.settings.accessTokenExpiresAt = 0;
+		this.settings.lastTokenRefreshAt = 0;
+		if (clearRefreshToken) {
+			this.settings.refreshToken = '';
+			this.settings.refreshTokenExpiresAt = 0;
+		}
+	}
+
+	private shouldRefreshAccessToken(): boolean {
+		const expiresAt = Number(this.settings.accessTokenExpiresAt || 0);
+		if (!this.settings.accessToken) {
+			return false;
+		}
+		if (!expiresAt) {
+			return false;
+		}
+		return expiresAt <= Date.now() + ACCESS_TOKEN_REFRESH_BUFFER_MS;
+	}
+
+	private isRefreshTokenExpired(): boolean {
+		const refreshToken = String(this.settings.refreshToken || '').trim();
+		if (!refreshToken) {
+			return true;
+		}
+		const expiresAt = Number(this.settings.refreshTokenExpiresAt || 0);
+		if (!expiresAt) {
+			return false;
+		}
+		return expiresAt <= Date.now() + 60 * 1000;
+	}
+
+	async maintainLongLivedAuth(options?: { reason?: 'startup' | 'interval' | 'before_request'; forceValidate?: boolean }): Promise<boolean> {
+		if (!this.settings.accessToken) {
+			return false;
+		}
+
+		const reason = options?.reason || 'before_request';
+		if (this.shouldRefreshAccessToken()) {
+			if (this.isRefreshTokenExpired()) {
+				Debug.warn(`⚠️ Skip token refresh during ${reason}: refresh_token unavailable or expired`);
+				return false;
+			}
+			Debug.log(`🔄 Proactively refreshing access token during ${reason}`);
+			return await this.refreshAccessToken();
+		}
+
+		if (options?.forceValidate) {
+			return await this.ensureValidToken();
+		}
+
+		return true;
+	}
+
 	async downloadMediaFromFeishu(mediaToken: string): Promise<ArrayBuffer> {
 		const token = String(mediaToken || '').trim();
 		if (!token) {
@@ -1075,10 +1179,11 @@ export class FeishuApiService {
 				// 支持v1和v2 API格式
 				const accessToken = data.access_token || data.data?.access_token;
 				const refreshToken = data.refresh_token || data.data?.refresh_token;
+				const expiresIn = data.expires_in || data.data?.expires_in;
 
 				if (accessToken) {
-					this.settings.accessToken = accessToken;
-					this.settings.refreshToken = refreshToken || '';
+					this.updateTokenMetadata(accessToken, refreshToken || '', expiresIn);
+					await this.persistSettingsIfNeeded();
 					return { success: true };
 				} else {
 					Debug.error('❌ No access token in response:', data);
@@ -2673,10 +2778,12 @@ export class FeishuApiService {
 				// 支持v1和v2 API格式
 				const accessToken = data.access_token || data.data?.access_token;
 				const refreshToken = data.refresh_token || data.data?.refresh_token;
+				const expiresIn = data.expires_in || data.data?.expires_in;
 
 				if (accessToken) {
-					this.settings.accessToken = accessToken;
-					this.settings.refreshToken = refreshToken || '';
+					this.updateTokenMetadata(accessToken, refreshToken || '', expiresIn);
+					await this.persistSettingsIfNeeded();
+					this.lastTokenValidationAt = Date.now();
 
 					Debug.log('✅ Token refresh successful, tokens updated');
 					return true;
@@ -2700,7 +2807,8 @@ export class FeishuApiService {
 				Debug.error('💡 Solution: Clear authorization in settings and re-authorize');
 
 				// 自动清除无效的refresh_token，避免重复尝试
-				this.settings.refreshToken = '';
+				this.clearTokenMetadata({ clearRefreshToken: true });
+				await this.persistSettingsIfNeeded();
 				Debug.log('🧹 Cleared invalid refresh token');
 			}
 
@@ -2724,6 +2832,21 @@ export class FeishuApiService {
 			return false;
 		}
 
+		if (this.shouldRefreshAccessToken()) {
+			if (this.isRefreshTokenExpired()) {
+				Debug.warn('⚠️ access_token 即将过期，但 refresh_token 已不可用');
+			} else {
+				const refreshSuccess = await this.refreshAccessToken();
+				if (refreshSuccess) {
+					return true;
+				}
+			}
+		}
+
+		if (this.lastTokenValidationAt && Date.now() - this.lastTokenValidationAt < ACCESS_TOKEN_VALIDATION_TTL_MS) {
+			return true;
+		}
+
 		// 简单测试token是否有效
 		try {
 			const response = await requestUrl({
@@ -2737,6 +2860,7 @@ export class FeishuApiService {
 			const data = response.json || JSON.parse(response.text);
 
 			if (data.code === 0) {
+				this.lastTokenValidationAt = Date.now();
 				return true;
 			} else if (this.isTokenExpiredError(data.code)) {
 				// Token过期，尝试刷新
@@ -2767,6 +2891,14 @@ export class FeishuApiService {
 			return await this.triggerReauth('需要重新授权', statusNotice);
 		}
 
+		if (this.shouldRefreshAccessToken() && !this.isRefreshTokenExpired()) {
+			const refreshSuccess = await this.refreshAccessToken();
+			if (refreshSuccess) {
+				Debug.log('✅ Proactive token refresh succeeded');
+				return true;
+			}
+		}
+
 		// 测试当前token是否有效
 		try {
 			const response = await requestUrl({
@@ -2780,6 +2912,7 @@ export class FeishuApiService {
 			const data = response.json || JSON.parse(response.text);
 
 			if (data.code === 0) {
+				this.lastTokenValidationAt = Date.now();
 				Debug.log('✅ Token is valid');
 				return true;
 			} else if (this.isTokenExpiredError(data.code)) {
