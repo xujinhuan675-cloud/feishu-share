@@ -22,6 +22,22 @@ After the first successful deploy:
 2. Put the same URL into your Feishu app's redirect URI list.
 3. Use the plugin's one-click auth flow as usual.
 
+### Troubleshooting First Deploy
+
+If you see:
+```
+Error: Get Pages site failed. Please verify that the repository has Pages enabled and configured to build using GitHub Actions
+```
+
+Try these steps:
+
+1. Go to your GitHub repo -> **Settings** -> **Pages** (left sidebar)
+2. Under **Build and deployment**, set **Source** to **GitHub Actions**
+3. Click **Save**
+4. Re-run the workflow (go to **Actions** -> select the workflow -> **Re-run all jobs**)
+
+Once Pages is enabled once, subsequent pushes will auto-deploy without manual steps.
+
 ## Suggested hosts
 
 - GitHub Pages
