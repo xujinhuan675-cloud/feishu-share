@@ -76,6 +76,12 @@ export default class FeishuPlugin extends Plugin {
 		this.registerObsidianProtocolHandler('feishu-auth', (params: any) => {
 			this.handleOAuthCallback(params);
 		});
+		this.registerObsidianProtocolHandler('feishu-share', (params: any) => {
+			const action = String(params.action || '').trim();
+			if (action === 'oauth-callback' || action === 'feishu-auth') {
+				this.handleOAuthCallback(params);
+			}
+		});
 		this.registerFileMappingEvents();
 
 		// 添加设置页面

@@ -1159,7 +1159,7 @@ var FEISHU_CONFIG = {
 var DEFAULT_SETTINGS = {
   appId: "",
   appSecret: "",
-  callbackUrl: "https://md2feishu.xinqi.life/oauth-callback",
+  callbackUrl: "https://xujinhuan675-cloud.github.io/feishu-share/",
   accessToken: "",
   refreshToken: "",
   userInfo: null,
@@ -13516,6 +13516,12 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
     this.syncState.migrateFromHistory();
     this.registerObsidianProtocolHandler("feishu-auth", (params) => {
       this.handleOAuthCallback(params);
+    });
+    this.registerObsidianProtocolHandler("feishu-share", (params) => {
+      const action = String(params.action || "").trim();
+      if (action === "oauth-callback" || action === "feishu-auth") {
+        this.handleOAuthCallback(params);
+      }
     });
     this.registerFileMappingEvents();
     this.addSettingTab(new FeishuSettingTab(this.app, this));

@@ -25,6 +25,10 @@ Use it like this:
 
 More details are in `oauth-callback/README.md`.
 
+For this repo's current GitHub remote, a push to `main` now auto-deploys `oauth-callback` to GitHub Pages at:
+
+`https://xujinhuan675-cloud.github.io/feishu-share/`
+
 ## IOTO Task Profile
 
 The plugin supports profile-based Bitable sync so different Feishu Bases can use different schemas without changing the legacy docx/Bitable flow.

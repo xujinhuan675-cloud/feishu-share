@@ -30,7 +30,7 @@ export const FEISHU_CONFIG = {
 export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	appId: '',
 	appSecret: '',
-	callbackUrl: 'https://md2feishu.xinqi.life/oauth-callback',
+	callbackUrl: 'https://xujinhuan675-cloud.github.io/feishu-share/',
 	accessToken: '',
 	refreshToken: '',
 	userInfo: null,

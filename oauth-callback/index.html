@@ -105,7 +105,7 @@
 <body>
   <main class="card">
     <h1>飞书授权回调</h1>
-    <p>这个页面会把飞书返回的授权参数转发给 Obsidian 插件。</p>
+    <p>这个页面会把飞书返回的授权参数转发给 Obsidian 插件，并自动尝试唤起 Obsidian。</p>
     <div id="status" class="status">正在准备回传到 Obsidian…</div>
     <div class="actions">
       <a id="openBtn" class="button" href="#">打开 Obsidian</a>
@@ -125,11 +125,15 @@
     const debugBtn = document.getElementById('debugBtn');
     const debugEl = document.getElementById('debug');
 
-    const obsidianUrl = `obsidian://feishu-auth?${params.toString()}`;
+    const legacyObsidianUrl = `obsidian://feishu-auth?${params.toString()}`;
+    const pluginObsidianParams = new URLSearchParams(params);
+    pluginObsidianParams.set('action', 'oauth-callback');
+    const pluginObsidianUrl = `obsidian://feishu-share?${pluginObsidianParams.toString()}`;
+    const launchUrls = [pluginObsidianUrl, legacyObsidianUrl];
     const hasCode = !!params.get('code');
     const hasError = !!params.get('error');
 
-    openBtn.href = obsidianUrl;
+    openBtn.href = pluginObsidianUrl;
     copyBtn.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(window.location.href);
@@ -141,11 +145,58 @@
     debugBtn.addEventListener('click', () => {
       debugEl.style.display = debugEl.style.display === 'block' ? 'none' : 'block';
     });
+    openBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      tryLaunchObsidian('manual');
+    });
+
+    function tryLaunchViaIframe(url) {
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = url;
+      document.body.appendChild(iframe);
+      window.setTimeout(() => iframe.remove(), 2000);
+    }
+
+    function tryLaunchViaAnchor(url) {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    }
+
+    function tryLaunchObsidian(trigger) {
+      if (!hasCode || hasError) {
+        return;
+      }
+
+      statusEl.className = 'status success';
+      statusEl.textContent = trigger === 'manual'
+        ? '正在重新尝试唤起 Obsidian...'
+        : '授权成功，正在尝试唤起 Obsidian...';
+
+      launchUrls.forEach((url, index) => {
+        window.setTimeout(() => {
+          tryLaunchViaIframe(url);
+          tryLaunchViaAnchor(url);
+        }, index * 450);
+      });
+
+      window.setTimeout(() => {
+        if (!document.hidden) {
+          statusEl.className = 'status';
+          statusEl.textContent = '如果 Obsidian 没有自动弹出，请点击“打开 Obsidian”重试；仍不行可复制当前回调地址，回到插件里走手动授权。';
+        }
+      }, 2200);
+    }
 
     debugEl.textContent = JSON.stringify({
       href: window.location.href,
       params: Object.fromEntries(params.entries()),
-      obsidianUrl
+      pluginObsidianUrl,
+      legacyObsidianUrl
     }, null, 2);
 
     if (hasError) {
@@ -153,11 +204,8 @@
       statusEl.textContent = `飞书返回了错误：${params.get('error_description') || params.get('error')}`;
     } else if (hasCode) {
       statusEl.className = 'status success';
-      statusEl.textContent = '授权成功，正在尝试唤起 Obsidian…';
-      window.location.href = obsidianUrl;
-      setTimeout(() => {
-        window.location.href = obsidianUrl;
-      }, 1200);
+      statusEl.textContent = '授权成功，正在尝试唤起 Obsidian...';
+      tryLaunchObsidian('auto');
     } else {
       statusEl.className = 'status error';
       statusEl.textContent = '当前回调地址里没有 code 参数，无法完成授权。';
