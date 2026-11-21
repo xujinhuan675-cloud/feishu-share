@@ -29,7 +29,7 @@ For this repo's current GitHub remote, a push to `main` now auto-deploys `oauth-
 
 `https://xujinhuan675-cloud.github.io/feishu-share/`
 
-## IOTO Task Profile
+## AnchorOS Task Profile
 
 The plugin supports profile-based Bitable sync so different Feishu Bases can use different schemas without changing the legacy docx/Bitable flow.
 
@@ -39,17 +39,17 @@ Built-in profile target:
 - `appToken`: `Wl3rbgORca63instiTpcaz1DnvZ`
 - `tableId`: `tbl02ZXD0Kkb2xOB`
 - `viewId`: `vewx3UsjHG`
-- Default target directory: `IOTO/Tasks`
+- Default target directory: `3-工作台/1-任务池/飞书任务`
 
-These identifiers belong to the IOTO Task Profile only. They are intentionally separate from the legacy document/default Bitable sync settings:
+These identifiers belong to the AnchorOS Task Profile only. They are intentionally separate from the legacy document/default Bitable sync settings:
 
 | Sync area | Config keys | Purpose |
 | --- | --- | --- |
 | Feishu docx sync | `docToken`, `url`, `targetType`, Drive/Wiki defaults | Markdown document upload and docx round-trip sync |
 | Legacy default Bitable sync | `bitableAppToken`, `bitableTableId`, `bitableFieldMapping` | Existing single-schema Bitable mapping used by the old Bitable/both target |
-| IOTO Task Profile | `bitableProfiles[].appToken`, `bitableProfiles[].tableId`, `bitableProfiles[].viewId` | Sync the Feishu Base `✅ 任务` table into IOTO Markdown task files |
+| AnchorOS Task Profile | `bitableProfiles[].appToken`, `bitableProfiles[].tableId`, `bitableProfiles[].viewId` | Sync the Feishu Base `✅ 任务` table into AnchorOS Markdown task files |
 
-For the IOTO Task Profile, read the IDs from the Base URL like this:
+For the AnchorOS Task Profile, read the IDs from the Base URL like this:
 
 ```text
 https://ccnainrpixz2.feishu.cn/base/Wl3rbgORca63instiTpcaz1DnvZ?table=tbl02ZXD0Kkb2xOB&view=vewx3UsjHG
@@ -61,13 +61,13 @@ Example `Profiles JSON`:
 ```json
 [
   {
-    "id": "ioto-task",
-    "name": "IOTO Task Profile",
+    "id": "anchoros-task-profile",
+    "name": "AnchorOS Task Profile",
     "enabled": true,
     "appToken": "Wl3rbgORca63instiTpcaz1DnvZ",
     "tableId": "tbl02ZXD0Kkb2xOB",
     "viewId": "vewx3UsjHG",
-    "targetDir": "IOTO/Tasks",
+    "targetDir": "3-工作台/1-任务池/飞书任务",
     "fileNameTemplate": "{{title}}",
     "fieldMapping": {
       "title": ["任务", "Title", "title"],
@@ -85,16 +85,22 @@ Example `Profiles JSON`:
       "category": ["分类", "Category", "category"]
     },
     "statusMapping": {
-      "未开始": "todo",
-      "进行中": "doing",
+      "未开始": "draft",
+      "待处理": "draft",
+      "进行中": "active",
+      "处理中": "active",
       "已完成": "done",
-      "已取消": "cancelled"
+      "完成": "done",
+      "已取消": "archived",
+      "归档": "archived"
     },
     "reverseStatusMapping": {
-      "todo": "未开始",
-      "doing": "进行中",
+      "draft": "未开始",
+      "active": "进行中",
+      "waiting_human": "待处理",
+      "reviewing": "进行中",
       "done": "已完成",
-      "cancelled": "已取消"
+      "archived": "已取消"
     },
     "frontmatterFields": [
       "stage",
@@ -125,9 +131,9 @@ Example `Profiles JSON`:
 Each Feishu `record_id` maps to one Markdown file. Profile sync writes Feishu body fields into a managed block:
 
 ```md
-<!-- feishu-share:bitable-profile:ioto-task:begin -->
+<!-- feishu-share:bitable-profile:anchoros-task-profile:begin -->
 Managed content from Feishu.
-<!-- feishu-share:bitable-profile:ioto-task:end -->
+<!-- feishu-share:bitable-profile:anchoros-task-profile:end -->
 ```
 
 Only mapped frontmatter and the managed block are written back to Feishu by default; notes outside the block are preserved locally and excluded from profile conflict hashes. Set `syncUncontrolledBody: true` only if the whole Markdown body should be eligible for writeback when the managed block is missing.

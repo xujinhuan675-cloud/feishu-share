@@ -522,9 +522,9 @@ export class FeishuSettingTab extends PluginSettingTab {
 		if ((this.plugin.settings.batchSyncScope || 'current_file') === 'custom_folder') {
 			new Setting(containerEl)
 				.setName('自定义同步文件夹路径')
-				.setDesc('填写 Obsidian vault 内的文件夹路径，例如：3-Task/IOTO研发')
+				.setDesc('填写 Obsidian vault 内的文件夹路径，例如：3-工作台/1-任务池/飞书任务')
 				.addText(text => text
-					.setPlaceholder('例如：3-Task/IOTO研发')
+					.setPlaceholder('例如：3-工作台/1-任务池/飞书任务')
 					.setValue(this.plugin.settings.batchSyncCustomFolder || '')
 					.onChange(async (value: string) => {
 						this.plugin.settings.batchSyncCustomFolder = value.trim();
@@ -592,7 +592,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 					.setName('定时同步文件夹路径')
 					.setDesc('仅对定时同步生效')
 					.addText(text => text
-						.setPlaceholder('例如：3-Task/IOTO研发')
+						.setPlaceholder('例如：3-工作台/1-任务池/飞书任务')
 						.setValue(this.plugin.settings.scheduledSyncCustomFolder || '')
 						.onChange(async (value: string) => {
 							this.plugin.settings.scheduledSyncCustomFolder = value.trim();
@@ -841,7 +841,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 			.setName('名称')
 			.setDesc('用于设置页显示和同步提示。')
 			.addText(text => text
-				.setPlaceholder('例如：IOTO 任务表')
+				.setPlaceholder('例如：AnchorOS 任务表')
 				.setValue(activeProfile.name || '')
 				.onChange(async (value: string) => {
 					activeProfile.name = value.trim() || activeProfile.id;
@@ -852,7 +852,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 			.setName('Profile ID')
 			.setDesc('作为本地映射和 frontmatter 中的稳定标识。')
 			.addText(text => text
-				.setPlaceholder('例如：ioto-task')
+				.setPlaceholder('例如：anchoros-task-profile')
 				.setValue(activeProfile.id || '')
 				.onChange(async (value: string) => {
 					const nextId = value.trim();
@@ -873,7 +873,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 			.setName('创建路径')
 			.setDesc('立即同步拉取的 Markdown 会创建到这个 Obsidian 文件夹；目录不存在时会自动创建。')
 			.addText(text => text
-				.setPlaceholder('例如：3-Task/IOTO研发')
+				.setPlaceholder('例如：3-工作台/1-任务池/飞书任务')
 				.setValue(activeProfile.targetDir || '')
 				.onChange(async (value: string) => {
 					activeProfile.targetDir = value.trim();

@@ -15,7 +15,7 @@ import {
 	buildProfileManagedContent,
 	buildProfileMarkdownFromRecord,
 	buildProfileRemoteManagedContent,
-	DEFAULT_IOTO_TASK_PROFILE,
+	DEFAULT_ANCHOROS_TASK_PROFILE,
 	getProfileRecordIdFromMarkdown,
 	mergeDefaultBitableProfiles,
 	renderProfileFileName,
@@ -2659,7 +2659,7 @@ export default class FeishuPlugin extends Plugin {
 			this.settings.activeBitableProfileId = this.settings.bitableProfiles[0]?.id || '';
 		}
 		if (!Array.isArray(this.settings.scheduledBitableProfileIds)) {
-			this.settings.scheduledBitableProfileIds = [DEFAULT_IOTO_TASK_PROFILE.id];
+			this.settings.scheduledBitableProfileIds = [DEFAULT_ANCHOROS_TASK_PROFILE.id];
 		}
 	}
 

@@ -24,7 +24,7 @@ const profileModule = await loadModule('bitable-profile.ts');
 const syncStateModule = await loadModule('sync-state.ts');
 
 const {
-	DEFAULT_IOTO_TASK_PROFILE,
+	DEFAULT_ANCHOROS_TASK_PROFILE,
 	applyProfileRecordToMarkdown,
 	buildProfileBitableFieldsFromMarkdown,
 	buildProfileManagedContent,
@@ -41,7 +41,7 @@ const {
 const { SyncStateService } = syncStateModule;
 
 const profile = {
-	...DEFAULT_IOTO_TASK_PROFILE,
+	...DEFAULT_ANCHOROS_TASK_PROFILE,
 	fieldMapping: {
 		title: '标题',
 		status: '状态',
@@ -51,7 +51,7 @@ const profile = {
 		category: '分类'
 	},
 	reverseStatusMapping: {
-		doing: '进行中'
+		active: '进行中'
 	}
 };
 
@@ -71,7 +71,7 @@ test('profile maps Feishu fields into frontmatter and a controlled block', () =>
 	assert.equal(fm.feishu_record_id, 'recA');
 	assert.equal(fm.feishu_table_id, profile.tableId);
 	assert.equal(fm.feishu_view_id, profile.viewId);
-	assert.equal(fm.status, 'doing');
+	assert.equal(fm.status, 'active');
 	assert.equal(fm.feishu_status, '进行中');
 	assert.equal(fm.owner, 'Alice');
 	assert.equal(fm.feishu_priority, 'P1');
@@ -83,14 +83,14 @@ test('profile maps Feishu fields into frontmatter and a controlled block', () =>
 test('profile writes mapped frontmatter and controlled block back to Feishu fields', () => {
 	const content = [
 		'---',
-		'status: doing',
+		'status: active',
 		'owner: "Bob"',
 		'feishu_priority: "P2"',
 		'feishu_category: "ops"',
 		'---',
-		'<!-- feishu-share:bitable-profile:ioto-task:begin -->',
+		'<!-- feishu-share:bitable-profile:anchoros-task-profile:begin -->',
 		'Local controlled body',
-		'<!-- feishu-share:bitable-profile:ioto-task:end -->',
+		'<!-- feishu-share:bitable-profile:anchoros-task-profile:end -->',
 		'',
 		'Private local note'
 	].join('\n');
@@ -118,12 +118,12 @@ test('record identity prefers feishu_record_id and profile selection can use tar
 	assert.equal(getProfileRecordIdFromMarkdown('---\nrecordId: recLegacy\n---\n'), 'recLegacy');
 
 	assert.equal(
-		selectBitableProfileForFile([profile], 'IOTO/Tasks/Build sync.md')?.id,
-		'ioto-task'
+		selectBitableProfileForFile([profile], '3-工作台/1-任务池/飞书任务/Build sync.md')?.id,
+		'anchoros-task-profile'
 	);
 	assert.equal(
-		selectBitableProfileForFile([profile], 'Other/Build sync.md', '---\nfeishu_profile: ioto-task\n---\n')?.id,
-		'ioto-task'
+		selectBitableProfileForFile([profile], 'Other/Build sync.md', '---\nfeishu_profile: anchoros-task-profile\n---\n')?.id,
+		'anchoros-task-profile'
 	);
 });
 
@@ -140,7 +140,7 @@ test('conflict detection uses only profile-managed markdown content', () => {
 		'正文': 'Remote body'
 	}));
 	service.upsert({
-		filePath: 'IOTO/Tasks/Build sync.md',
+		filePath: '3-工作台/1-任务池/飞书任务/Build sync.md',
 		content: baselineManaged,
 		direction: 'bitable',
 		remoteHash: baselineRemote
@@ -148,7 +148,7 @@ test('conflict detection uses only profile-managed markdown content', () => {
 
 	const outsideOnly = `${baseline}\nUser note v2\n`;
 	assert.equal(
-		service.evaluateSync('IOTO/Tasks/Build sync.md', buildProfileManagedContent(outsideOnly, profile), {
+		service.evaluateSync('3-工作台/1-任务池/飞书任务/Build sync.md', buildProfileManagedContent(outsideOnly, profile), {
 			kind: 'bitable',
 			hash: baselineRemote
 		}).hasLocalChanges,
@@ -160,7 +160,7 @@ test('conflict detection uses only profile-managed markdown content', () => {
 		'状态': '进行中',
 		'正文': 'Remote body changed'
 	}));
-	const evaluation = service.evaluateSync('IOTO/Tasks/Build sync.md', buildProfileManagedContent(localManagedChanged, profile), {
+	const evaluation = service.evaluateSync('3-工作台/1-任务池/飞书任务/Build sync.md', buildProfileManagedContent(localManagedChanged, profile), {
 		kind: 'bitable',
 		hash: remoteChangedHash
 	});
@@ -179,12 +179,12 @@ test('scheduled profile selection respects enabled profiles and per-profile sche
 		scheduledSyncEnabled: true
 	};
 	assert.deepEqual(
-		selectScheduledBitableProfiles([scheduledProfile, other], ['ioto-task']).map((item) => item.id),
-		['ioto-task']
+		selectScheduledBitableProfiles([scheduledProfile, other], ['anchoros-task-profile']).map((item) => item.id),
+		['anchoros-task-profile']
 	);
 	assert.deepEqual(
 		selectScheduledBitableProfiles([scheduledProfile, { ...other, enabled: true }], []).map((item) => item.id),
-		['ioto-task', 'other']
+		['anchoros-task-profile', 'other']
 	);
 	assert.deepEqual(
 		selectScheduledBitableProfiles([{ ...scheduledProfile, scheduledSyncEnabled: false }, { ...other, enabled: true }], []).map((item) => item.id),
@@ -194,7 +194,7 @@ test('scheduled profile selection respects enabled profiles and per-profile sche
 
 test('persisted default profile keeps title mapping and fuzzy-matches emoji field names', () => {
 	const persisted = normalizeBitableProfile({
-		...DEFAULT_IOTO_TASK_PROFILE,
+		...DEFAULT_ANCHOROS_TASK_PROFILE,
 		fieldMapping: {
 			status: '状态'
 		}
@@ -214,7 +214,7 @@ test('persisted default profile keeps title mapping and fuzzy-matches emoji fiel
 
 test('profile falls back to a readable body when no dedicated body field is mapped', () => {
 	const persisted = normalizeBitableProfile({
-		...DEFAULT_IOTO_TASK_PROFILE,
+		...DEFAULT_ANCHOROS_TASK_PROFILE,
 		fieldNamesCache: ['🟦任务描述', '🟩需求梳理', '完成时间', '开始时间', '状态'],
 		fieldMapping: {
 			status: '状态'

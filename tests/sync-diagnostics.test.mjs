@@ -183,7 +183,7 @@ test('remote missing states stay visible and do not enter smart sync', () => {
 		filePath: 'Notes/zombie.md',
 		title: 'Zombie',
 		status: 'error',
-		lastError: 'IOTO Task Profile 远端记录已删除（recordId: rec-zombie），本地文件暂时保留'
+		lastError: 'AnchorOS Task Profile 远端记录已删除（recordId: rec-zombie），本地文件暂时保留'
 	};
 	const view = diagnostics.buildSyncStatusView(state);
 

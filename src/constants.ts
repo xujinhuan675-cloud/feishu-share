@@ -100,10 +100,10 @@ export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	bitableFieldMapping: '',
 	bitableFieldNamesCache: [],
 	bitableExcludedFields: '',
-	bitableProfiles: [{ ...DEFAULT_IOTO_TASK_PROFILE }],
+	bitableProfiles: [{ ...DEFAULT_ANCHOROS_TASK_PROFILE }],
 	activeBitableProfileId: '',
 	enableScheduledBitableProfiles: false,
-	scheduledBitableProfileIds: [DEFAULT_IOTO_TASK_PROFILE.id],
+	scheduledBitableProfileIds: [DEFAULT_ANCHOROS_TASK_PROFILE.id],
 };
 
 export const FEISHU_ERROR_MESSAGES: Record<number, string> = {
@@ -174,4 +174,4 @@ export const CALLOUT_TYPE_MAPPING: Record<string, { emoji: string; color: string
 };
 
 import type { FeishuSettings } from './types';
-import { DEFAULT_IOTO_TASK_PROFILE } from './bitable-profile';
+import { DEFAULT_ANCHOROS_TASK_PROFILE } from './bitable-profile';

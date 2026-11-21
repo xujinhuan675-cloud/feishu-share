@@ -343,7 +343,7 @@ function isEmptyStructuredBitableObject(value) {
 }
 
 // src/bitable-profile.ts
-var IOTO_TASK_PROFILE_ID = "ioto-task";
+var ANCHOROS_TASK_PROFILE_ID = "anchoros-task-profile";
 var PROFILE_FRONTMATTER_FIELDS = [
   "stage",
   "status",
@@ -375,14 +375,14 @@ var WRITEBACK_FRONTMATTER_FIELDS = [
   "feishu_priority",
   "feishu_category"
 ];
-var DEFAULT_IOTO_TASK_PROFILE = {
-  id: IOTO_TASK_PROFILE_ID,
-  name: "IOTO Task Profile",
+var DEFAULT_ANCHOROS_TASK_PROFILE = {
+  id: ANCHOROS_TASK_PROFILE_ID,
+  name: "AnchorOS Task Profile",
   enabled: true,
   appToken: "Wl3rbgORca63instiTpcaz1DnvZ",
   tableId: "tbl02ZXD0Kkb2xOB",
   viewId: "vewx3UsjHG",
-  targetDir: "IOTO/Tasks",
+  targetDir: "3-\u5DE5\u4F5C\u53F0/1-\u4EFB\u52A1\u6C60/\u98DE\u4E66\u4EFB\u52A1",
   fileNameTemplate: "{{title}}",
   fieldMapping: {
     title: ["\u4EFB\u52A1", "\u4EFB\u52A1\u63CF\u8FF0", "Title", "title", "\u540D\u79F0"],
@@ -400,23 +400,32 @@ var DEFAULT_IOTO_TASK_PROFILE = {
     category: ["\u5206\u7C7B", "Category", "category"]
   },
   statusMapping: {
-    "\u672A\u5F00\u59CB": "todo",
-    "\u5F85\u5904\u7406": "todo",
-    "\u8FDB\u884C\u4E2D": "doing",
-    "\u5904\u7406\u4E2D": "doing",
+    "\u672A\u5F00\u59CB": "draft",
+    "\u5F85\u5904\u7406": "draft",
+    "\u8FDB\u884C\u4E2D": "active",
+    "\u5904\u7406\u4E2D": "active",
+    "\u5F85\u4EBA\u5DE5\u786E\u8BA4": "waiting_human",
+    "\u5F85\u786E\u8BA4": "waiting_human",
+    "\u5F85\u590D\u6838": "reviewing",
+    "\u5BA1\u6838\u4E2D": "reviewing",
     "\u5DF2\u5B8C\u6210": "done",
     "\u5B8C\u6210": "done",
-    "\u5DF2\u53D6\u6D88": "cancelled",
-    todo: "todo",
-    doing: "doing",
+    "\u5DF2\u53D6\u6D88": "archived",
+    "\u5F52\u6863": "archived",
+    draft: "draft",
+    active: "active",
+    waiting_human: "waiting_human",
+    reviewing: "reviewing",
     done: "done",
-    cancelled: "cancelled"
+    archived: "archived"
   },
   reverseStatusMapping: {
-    todo: "\u672A\u5F00\u59CB",
-    doing: "\u8FDB\u884C\u4E2D",
+    draft: "\u672A\u5F00\u59CB",
+    active: "\u8FDB\u884C\u4E2D",
+    waiting_human: "\u5F85\u5904\u7406",
+    reviewing: "\u8FDB\u884C\u4E2D",
     done: "\u5DF2\u5B8C\u6210",
-    cancelled: "\u5DF2\u53D6\u6D88"
+    archived: "\u5DF2\u53D6\u6D88"
   },
   bodyFields: ["body"],
   primaryBodyField: "body",
@@ -429,11 +438,11 @@ var DEFAULT_IOTO_TASK_PROFILE = {
   scheduledSyncRunOnStartup: false
 };
 function getEmbeddedProfileDefaults(profileId) {
-  return profileId === IOTO_TASK_PROFILE_ID ? DEFAULT_IOTO_TASK_PROFILE : null;
+  return profileId === ANCHOROS_TASK_PROFILE_ID ? DEFAULT_ANCHOROS_TASK_PROFILE : null;
 }
 function mergeDefaultBitableProfiles(profiles) {
   const normalized = Array.isArray(profiles) ? profiles.map(normalizeBitableProfile).filter((profile) => !!profile) : [];
-  return normalized.length > 0 ? normalized : [{ ...DEFAULT_IOTO_TASK_PROFILE }];
+  return normalized.length > 0 ? normalized : [{ ...DEFAULT_ANCHOROS_TASK_PROFILE }];
 }
 function normalizeBitableProfile(profile) {
   if (!profile || typeof profile !== "object") {
@@ -1222,10 +1231,10 @@ var DEFAULT_SETTINGS = {
   bitableFieldMapping: "",
   bitableFieldNamesCache: [],
   bitableExcludedFields: "",
-  bitableProfiles: [{ ...DEFAULT_IOTO_TASK_PROFILE }],
+  bitableProfiles: [{ ...DEFAULT_ANCHOROS_TASK_PROFILE }],
   activeBitableProfileId: "",
   enableScheduledBitableProfiles: false,
-  scheduledBitableProfileIds: [DEFAULT_IOTO_TASK_PROFILE.id]
+  scheduledBitableProfileIds: [DEFAULT_ANCHOROS_TASK_PROFILE.id]
 };
 var FEISHU_ERROR_MESSAGES = {
   1061002: "\u53C2\u6570\u9519\u8BEF\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u683C\u5F0F\u548C\u5927\u5C0F",
@@ -10983,7 +10992,7 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       });
     });
     if ((this.plugin.settings.batchSyncScope || "current_file") === "custom_folder") {
-      new import_obsidian6.Setting(containerEl).setName("\u81EA\u5B9A\u4E49\u540C\u6B65\u6587\u4EF6\u5939\u8DEF\u5F84").setDesc("\u586B\u5199 Obsidian vault \u5185\u7684\u6587\u4EF6\u5939\u8DEF\u5F84\uFF0C\u4F8B\u5982\uFF1A3-Task/IOTO\u7814\u53D1").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1A3-Task/IOTO\u7814\u53D1").setValue(this.plugin.settings.batchSyncCustomFolder || "").onChange(async (value) => {
+      new import_obsidian6.Setting(containerEl).setName("\u81EA\u5B9A\u4E49\u540C\u6B65\u6587\u4EF6\u5939\u8DEF\u5F84").setDesc("\u586B\u5199 Obsidian vault \u5185\u7684\u6587\u4EF6\u5939\u8DEF\u5F84\uFF0C\u4F8B\u5982\uFF1A3-\u5DE5\u4F5C\u53F0/1-\u4EFB\u52A1\u6C60/\u98DE\u4E66\u4EFB\u52A1").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1A3-\u5DE5\u4F5C\u53F0/1-\u4EFB\u52A1\u6C60/\u98DE\u4E66\u4EFB\u52A1").setValue(this.plugin.settings.batchSyncCustomFolder || "").onChange(async (value) => {
         this.plugin.settings.batchSyncCustomFolder = value.trim();
         await this.plugin.saveSettings();
       }));
@@ -11014,7 +11023,7 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
         });
       });
       if ((this.plugin.settings.scheduledSyncScope || "tracked_files") === "custom_folder") {
-        new import_obsidian6.Setting(containerEl).setName("\u5B9A\u65F6\u540C\u6B65\u6587\u4EF6\u5939\u8DEF\u5F84").setDesc("\u4EC5\u5BF9\u5B9A\u65F6\u540C\u6B65\u751F\u6548").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1A3-Task/IOTO\u7814\u53D1").setValue(this.plugin.settings.scheduledSyncCustomFolder || "").onChange(async (value) => {
+        new import_obsidian6.Setting(containerEl).setName("\u5B9A\u65F6\u540C\u6B65\u6587\u4EF6\u5939\u8DEF\u5F84").setDesc("\u4EC5\u5BF9\u5B9A\u65F6\u540C\u6B65\u751F\u6548").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1A3-\u5DE5\u4F5C\u53F0/1-\u4EFB\u52A1\u6C60/\u98DE\u4E66\u4EFB\u52A1").setValue(this.plugin.settings.scheduledSyncCustomFolder || "").onChange(async (value) => {
           this.plugin.settings.scheduledSyncCustomFolder = value.trim();
           await this.plugin.saveSettings();
         }));
@@ -11196,11 +11205,11 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       activeProfile.enabled = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian6.Setting(containerEl).setName("\u540D\u79F0").setDesc("\u7528\u4E8E\u8BBE\u7F6E\u9875\u663E\u793A\u548C\u540C\u6B65\u63D0\u793A\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1AIOTO \u4EFB\u52A1\u8868").setValue(activeProfile.name || "").onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName("\u540D\u79F0").setDesc("\u7528\u4E8E\u8BBE\u7F6E\u9875\u663E\u793A\u548C\u540C\u6B65\u63D0\u793A\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1AAnchorOS \u4EFB\u52A1\u8868").setValue(activeProfile.name || "").onChange(async (value) => {
       activeProfile.name = value.trim() || activeProfile.id;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian6.Setting(containerEl).setName("Profile ID").setDesc("\u4F5C\u4E3A\u672C\u5730\u6620\u5C04\u548C frontmatter \u4E2D\u7684\u7A33\u5B9A\u6807\u8BC6\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1Aioto-task").setValue(activeProfile.id || "").onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName("Profile ID").setDesc("\u4F5C\u4E3A\u672C\u5730\u6620\u5C04\u548C frontmatter \u4E2D\u7684\u7A33\u5B9A\u6807\u8BC6\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1Aanchoros-task-profile").setValue(activeProfile.id || "").onChange(async (value) => {
       const nextId = value.trim();
       if (!nextId) {
         return;
@@ -11214,7 +11223,7 @@ var FeishuSettingTab = class extends import_obsidian6.PluginSettingTab {
       this.plugin.settings.activeBitableProfileId = nextId;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian6.Setting(containerEl).setName("\u521B\u5EFA\u8DEF\u5F84").setDesc("\u7ACB\u5373\u540C\u6B65\u62C9\u53D6\u7684 Markdown \u4F1A\u521B\u5EFA\u5230\u8FD9\u4E2A Obsidian \u6587\u4EF6\u5939\uFF1B\u76EE\u5F55\u4E0D\u5B58\u5728\u65F6\u4F1A\u81EA\u52A8\u521B\u5EFA\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1A3-Task/IOTO\u7814\u53D1").setValue(activeProfile.targetDir || "").onChange(async (value) => {
+    new import_obsidian6.Setting(containerEl).setName("\u521B\u5EFA\u8DEF\u5F84").setDesc("\u7ACB\u5373\u540C\u6B65\u62C9\u53D6\u7684 Markdown \u4F1A\u521B\u5EFA\u5230\u8FD9\u4E2A Obsidian \u6587\u4EF6\u5939\uFF1B\u76EE\u5F55\u4E0D\u5B58\u5728\u65F6\u4F1A\u81EA\u52A8\u521B\u5EFA\u3002").addText((text) => text.setPlaceholder("\u4F8B\u5982\uFF1A3-\u5DE5\u4F5C\u53F0/1-\u4EFB\u52A1\u6C60/\u98DE\u4E66\u4EFB\u52A1").setValue(activeProfile.targetDir || "").onChange(async (value) => {
       activeProfile.targetDir = value.trim();
       await this.plugin.saveSettings();
     }));
@@ -15981,7 +15990,7 @@ var FeishuPlugin = class extends import_obsidian7.Plugin {
       this.settings.activeBitableProfileId = ((_a = this.settings.bitableProfiles[0]) == null ? void 0 : _a.id) || "";
     }
     if (!Array.isArray(this.settings.scheduledBitableProfileIds)) {
-      this.settings.scheduledBitableProfileIds = [DEFAULT_IOTO_TASK_PROFILE.id];
+      this.settings.scheduledBitableProfileIds = [DEFAULT_ANCHOROS_TASK_PROFILE.id];
     }
   }
   async saveSettings() {

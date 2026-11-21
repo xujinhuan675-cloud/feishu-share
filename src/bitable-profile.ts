@@ -1,7 +1,7 @@
 import type { BitableFieldMeta, BitableSyncProfile, BitableTableOption } from './types';
 import { bitableFieldToDisplayText, bitableFieldToFrontMatterValue, bitableFieldToPlainText, normalizeBitableWriteValue } from './bitable-fields';
 
-export const IOTO_TASK_PROFILE_ID = 'ioto-task';
+export const ANCHOROS_TASK_PROFILE_ID = 'anchoros-task-profile';
 
 export const PROFILE_FRONTMATTER_FIELDS = [
 	'stage',
@@ -36,14 +36,14 @@ const WRITEBACK_FRONTMATTER_FIELDS = [
 	'feishu_category'
 ];
 
-export const DEFAULT_IOTO_TASK_PROFILE: BitableSyncProfile = {
-	id: IOTO_TASK_PROFILE_ID,
-	name: 'IOTO Task Profile',
+export const DEFAULT_ANCHOROS_TASK_PROFILE: BitableSyncProfile = {
+	id: ANCHOROS_TASK_PROFILE_ID,
+	name: 'AnchorOS Task Profile',
 	enabled: true,
 	appToken: 'Wl3rbgORca63instiTpcaz1DnvZ',
 	tableId: 'tbl02ZXD0Kkb2xOB',
 	viewId: 'vewx3UsjHG',
-	targetDir: 'IOTO/Tasks',
+	targetDir: '3-工作台/1-任务池/飞书任务',
 	fileNameTemplate: '{{title}}',
 	fieldMapping: {
 		title: ['任务', '任务描述', 'Title', 'title', '名称'],
@@ -60,24 +60,33 @@ export const DEFAULT_IOTO_TASK_PROFILE: BitableSyncProfile = {
 		priority: ['优先级', 'Priority', 'priority'],
 		category: ['分类', 'Category', 'category']
 	},
-	statusMapping: {
-		'未开始': 'todo',
-		'待处理': 'todo',
-		'进行中': 'doing',
-		'处理中': 'doing',
+		statusMapping: {
+		'未开始': 'draft',
+		'待处理': 'draft',
+		'进行中': 'active',
+		'处理中': 'active',
+		'待人工确认': 'waiting_human',
+		'待确认': 'waiting_human',
+		'待复核': 'reviewing',
+		'审核中': 'reviewing',
 		'已完成': 'done',
 		'完成': 'done',
-		'已取消': 'cancelled',
-		todo: 'todo',
-		doing: 'doing',
+		'已取消': 'archived',
+		'归档': 'archived',
+		draft: 'draft',
+		active: 'active',
+		waiting_human: 'waiting_human',
+		reviewing: 'reviewing',
 		done: 'done',
-		cancelled: 'cancelled'
+		archived: 'archived'
 	},
 	reverseStatusMapping: {
-		todo: '未开始',
-		doing: '进行中',
+		draft: '未开始',
+		active: '进行中',
+		waiting_human: '待处理',
+		reviewing: '进行中',
 		done: '已完成',
-		cancelled: '已取消'
+		archived: '已取消'
 	},
 	bodyFields: ['body'],
 	primaryBodyField: 'body',
@@ -91,7 +100,7 @@ export const DEFAULT_IOTO_TASK_PROFILE: BitableSyncProfile = {
 };
 
 function getEmbeddedProfileDefaults(profileId: string): BitableSyncProfile | null {
-	return profileId === IOTO_TASK_PROFILE_ID ? DEFAULT_IOTO_TASK_PROFILE : null;
+	return profileId === ANCHOROS_TASK_PROFILE_ID ? DEFAULT_ANCHOROS_TASK_PROFILE : null;
 }
 
 export type ProfileRemoteRecord = {
@@ -106,7 +115,7 @@ export function mergeDefaultBitableProfiles(profiles: BitableSyncProfile[] | und
 			.map(normalizeBitableProfile)
 			.filter((profile): profile is BitableSyncProfile => !!profile)
 		: [];
-	return normalized.length > 0 ? normalized : [{ ...DEFAULT_IOTO_TASK_PROFILE }];
+	return normalized.length > 0 ? normalized : [{ ...DEFAULT_ANCHOROS_TASK_PROFILE }];
 }
 
 export function normalizeBitableProfile(profile: any): BitableSyncProfile | null {
